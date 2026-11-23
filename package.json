@@ -1,0 +1,109 @@
+{
+  "name": "@understudy-build/mini-fsm",
+  "version": "0.0.0",
+  "description": "A minimal finite state machine over TypeScript tagged unions, with React, Vue, Solid and Svelte adapters.",
+  "keywords": [
+    "discriminated-union",
+    "fsm",
+    "react",
+    "solid",
+    "state-machine",
+    "svelte",
+    "vue"
+  ],
+  "homepage": "https://github.com/understudy-build/mini-fsm#readme",
+  "bugs": "https://github.com/understudy-build/mini-fsm/issues",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/understudy-build/mini-fsm.git"
+  },
+  "files": [
+    "dist",
+    "LICENSE.md"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./react": {
+      "types": "./dist/adapters/react.d.ts",
+      "default": "./dist/adapters/react.js"
+    },
+    "./solid": {
+      "types": "./dist/adapters/solid.d.ts",
+      "default": "./dist/adapters/solid.js"
+    },
+    "./svelte": {
+      "types": "./dist/adapters/svelte.d.ts",
+      "default": "./dist/adapters/svelte.js"
+    },
+    "./vue": {
+      "types": "./dist/adapters/vue.d.ts",
+      "default": "./dist/adapters/vue.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsrs --noEmit",
+    "test": "vitest run",
+    "lint": "oxlint --deny-warnings",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "@changesets/changelog-github": "1.0.1",
+    "@changesets/cli": "3.0.3",
+    "@sveltejs/vite-plugin-svelte": "7.3.1",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vue/test-utils": "^2.6.0",
+    "happy-dom": "^21.0.4",
+    "oxfmt": "^0.77.0",
+    "oxlint": "1.92.0",
+    "oxlint-tsgolint": "^7.0.2008",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "solid-js": "^2.0.3",
+    "svelte": "5.57.3",
+    "tsdown": "^0.23.7",
+    "tsrs": "0.25.0-ts7.1.0-beta",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.1",
+    "vue": "3.5.45"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "solid-js": ">=2",
+    "svelte": ">=5.7",
+    "vue": ">=3.3"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "solid-js": {
+      "optional": true
+    },
+    "svelte": {
+      "optional": true
+    },
+    "vue": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "packageManager": "pnpm@12.18.0"
+}

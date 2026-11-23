@@ -1,0 +1,140 @@
+import { afterEach, expect, test, vi } from "vitest"
+
+import { actor, machine } from "../../src/index.ts"
+import { searchMachine, type State } from "../search.ts"
+import { fakeFetch } from "../utils.ts"
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+test("ignores an event the current state does not handle", () => {
+  const search = actor(searchMachine)
+  const seen: Array<State> = []
+  search.subscribe((state) => seen.push(state))
+  const before = search.get()
+
+  search.send({ _tag: "resolve", items: ["a"] })
+
+  expect(search.get()).toBe(before)
+  expect(seen).toEqual([{ _tag: "idle" }])
+})
+
+test("runs no effect until someone subscribes", async () => {
+  const requests = fakeFetch()
+  const search = actor(searchMachine)
+
+  search.send({ _tag: "search", query: "ts" })
+  expect(requests).toHaveLength(0)
+
+  search.subscribe(() => {})
+  expect(requests.map((request) => request.url)).toEqual(["/search?q=ts"])
+
+  requests[0]!.respond(["typescript"])
+  await settle()
+  expect(search.get()).toEqual({ _tag: "success", query: "ts", items: ["typescript"] })
+})
+
+test("a new search aborts the request in flight", async () => {
+  const requests = fakeFetch()
+  const search = actor(searchMachine)
+  search.subscribe(() => {})
+
+  search.send({ _tag: "search", query: "a" })
+  search.send({ _tag: "search", query: "ab" })
+  requests[1]!.respond(["abc"])
+  await settle()
+
+  expect(requests[0]!.signal.aborted).toBe(true)
+  expect(search.get()).toEqual({ _tag: "success", query: "ab", items: ["abc"] })
+})
+
+test("drops a late send from a state the machine already left", async () => {
+  const requests = fakeFetch({ honorAbort: false })
+  const search = actor(searchMachine)
+  search.subscribe(() => {})
+
+  search.send({ _tag: "search", query: "a" })
+  search.send({ _tag: "search", query: "ab" })
+  requests[1]!.respond(["abc"])
+  await settle()
+  requests[0]!.respond(["stale"])
+  await settle()
+
+  expect(search.get()).toEqual({ _tag: "success", query: "ab", items: ["abc"] })
+})
+
+test("the last unsubscribe aborts the running effect", () => {
+  const requests = fakeFetch()
+  const search = actor(searchMachine, { _tag: "loading", query: "ts" })
+  const stopFirst = search.subscribe(() => {})
+  const stopSecond = search.subscribe(() => {})
+
+  stopFirst()
+  expect(requests[0]!.signal.aborted).toBe(false)
+  stopSecond()
+  expect(requests[0]!.signal.aborted).toBe(true)
+})
+
+test("a send from inside an effect waits for the current step, so listeners see every state in order", () => {
+  type Light = { _tag: "red" } | { _tag: "green" } | { _tag: "yellow" }
+  const light = machine<Light, { _tag: "next" }>()({
+    initial: { _tag: "red" },
+    states: {
+      red: { to: ["green"], on: { next: () => ({ _tag: "green" }) } },
+      // Passes straight through, like a guard state.
+      green: {
+        to: ["yellow"],
+        on: { next: () => ({ _tag: "yellow" }) },
+        enter: (_, { send }) => send({ _tag: "next" }),
+      },
+      yellow: { to: [] },
+    },
+  })
+  const running = actor(light)
+  const seen: Array<string> = []
+  running.subscribe((state) => seen.push(state._tag))
+
+  running.send({ _tag: "next" })
+
+  expect(seen).toEqual(["red", "green", "yellow"])
+})
+
+test("a state stays in its tag without listing itself in `to`", () => {
+  const requests = fakeFetch()
+  const search = actor(searchMachine)
+  search.subscribe(() => {})
+
+  search.send({ _tag: "search", query: "a" })
+  search.send({ _tag: "search", query: "ab" })
+
+  expect(search.get()).toEqual({ _tag: "loading", query: "ab" })
+  expect(requests).toHaveLength(2)
+})
+
+test("exposes the graph each state declared", () => {
+  expect(searchMachine.graph).toEqual({
+    idle: ["loading"],
+    loading: ["success", "failure"],
+    success: ["loading"],
+    failure: ["loading"],
+  })
+})
+
+test("throws when a handler the compiler can't see leaves the graph", () => {
+  type Door = { readonly _tag: "open" } | { readonly _tag: "closed" }
+  const door = machine<Door, { readonly _tag: "push" }>()({
+    initial: { _tag: "open" },
+    states: {
+      // The cast stands in for JavaScript callers and `any` data.
+      open: { to: [], on: { push: (() => ({ _tag: "closed" })) as never } },
+      closed: { to: [] },
+    },
+  })
+
+  expect(() => door.transition({ _tag: "open" }, { _tag: "push" })).toThrow(
+    expect.objectContaining({ _tag: "IllegalTransition", from: "open", to: "closed" }),
+  )
+})
