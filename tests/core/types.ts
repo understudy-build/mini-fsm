@@ -85,3 +85,13 @@ door({
     welded: { to: [] },
   },
 })
+
+door({
+  initial: { _tag: "open" },
+  states: {
+    // @ts-expect-error `reenter` only names events: `pull` is not one
+    open: { to: [], reenter: ["pull"] },
+    closed: { to: [] },
+    welded: { to: [] },
+  },
+})

@@ -29,6 +29,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./check": {
+      "types": "./dist/check.d.ts",
+      "default": "./dist/check.js"
+    },
     "./react": {
       "types": "./dist/adapters/react.d.ts",
       "default": "./dist/adapters/react.js"
