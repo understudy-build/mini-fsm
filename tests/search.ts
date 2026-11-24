@@ -36,15 +36,13 @@ export const searchMachine = machine<State, Event>()({
         resolve: (state, event) => ({ _tag: "success", query: state.query, items: event.items }),
         reject: (state, event) => ({ _tag: "failure", query: state.query, error: event.error }),
       },
-      // Leaving `loading` aborts the request, and the `reject` it causes is dropped.
+      // A new query restarts the request; leaving `loading` aborts it and drops its error.
+      reenter: ["search"],
       enter: async (state, { send, signal }) => {
-        try {
-          const response = await fetch(`/search?q=${encodeURIComponent(state.query)}`, { signal })
-          send({ _tag: "resolve", items: parseItems(await response.json()) })
-        } catch (error) {
-          send({ _tag: "reject", error: String(error) })
-        }
+        const response = await fetch(`/search?q=${encodeURIComponent(state.query)}`, { signal })
+        send({ _tag: "resolve", items: parseItems(await response.json()) })
       },
+      catch: (error) => ({ _tag: "reject", error: String(error) }),
     },
     success: { to: ["loading"], on: { search } },
     failure: { to: ["loading"], on: { search } },

@@ -138,3 +138,92 @@ test("throws when a handler the compiler can't see leaves the graph", () => {
     expect.objectContaining({ _tag: "IllegalTransition", from: "open", to: "closed" }),
   )
 })
+
+test("a same-tag update keeps the running effect", () => {
+  type Upload = { _tag: "uploading"; pct: number } | { _tag: "done" }
+  const started: Array<AbortSignal> = []
+  const upload = machine<Upload, { _tag: "progress"; pct: number }>()({
+    initial: { _tag: "uploading", pct: 0 },
+    states: {
+      uploading: {
+        to: ["done"],
+        on: { progress: (state, event) => ({ ...state, pct: event.pct }) },
+        enter: (_, { signal }) => {
+          started.push(signal)
+        },
+      },
+      done: { to: [] },
+    },
+  })
+  const running = actor(upload)
+  running.subscribe(() => {})
+
+  running.send({ _tag: "progress", pct: 50 })
+
+  expect(running.get()).toEqual({ _tag: "uploading", pct: 50 })
+  expect(started.map((signal) => signal.aborted)).toEqual([false])
+})
+
+test("a failed request becomes the event `catch` returns", async () => {
+  const requests = fakeFetch()
+  const search = actor(searchMachine)
+  search.subscribe(() => {})
+
+  search.send({ _tag: "search", query: "ts" })
+  requests[0]!.respond({ not: "a list" })
+  await settle()
+
+  expect(search.get()).toEqual({ _tag: "failure", query: "ts", error: "Error: Malformed response" })
+})
+
+test("an effect that throws synchronously still leaves listeners on the current state", async () => {
+  type Door = { _tag: "open" } | { _tag: "closed" }
+  const door = machine<Door, { _tag: "push" } | { _tag: "jammed" }>()({
+    initial: { _tag: "open" },
+    states: {
+      open: { to: ["closed"], on: { push: () => ({ _tag: "closed" }) } },
+      closed: {
+        to: [],
+        enter: () => {
+          throw new Error("motor")
+        },
+        catch: () => ({ _tag: "jammed" }),
+      },
+    },
+  })
+  const running = actor(door)
+  const seen: Array<string> = []
+  running.subscribe((state) => seen.push(state._tag))
+
+  running.send({ _tag: "push" })
+  await settle()
+
+  expect(running.get()).toEqual({ _tag: "closed" })
+  expect(seen).toEqual(["open", "closed"])
+})
+
+test("a subscriber sees the initial state before its effect moves on", () => {
+  type Boot = { _tag: "checking" } | { _tag: "ready" }
+  const boot = machine<Boot, { _tag: "ok" }>()({
+    initial: { _tag: "checking" },
+    states: {
+      checking: {
+        to: ["ready"],
+        on: { ok: () => ({ _tag: "ready" }) },
+        enter: (_, { send }) => send({ _tag: "ok" }),
+      },
+      ready: { to: [] },
+    },
+  })
+  const seen: Array<string> = []
+
+  actor(boot).subscribe((state) => seen.push(state._tag))
+
+  expect(seen).toEqual(["checking", "ready"])
+})
+
+test("transition reports an event the state has no handler for", () => {
+  expect(searchMachine.transition({ _tag: "idle" }, { _tag: "resolve", items: [] })).toEqual({
+    _tag: "ignored",
+  })
+})

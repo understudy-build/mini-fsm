@@ -1,6 +1,6 @@
 # @understudy-build/mini-fsm
 
-A finite state machine over TypeScript tagged unions, in 963 bytes minified (569 gzipped). States and events are plain objects with a `_tag`; each handler sees only the state and event variants it handles, and each state lists the states it may move to.
+A finite state machine over TypeScript tagged unions, in 1,352 bytes minified (732 gzipped). States and events are plain objects with a `_tag`; each handler sees only the state and event variants it handles, and each state lists the states it may move to.
 
 Adapters for React, Vue, Solid 2 and Svelte 5 live at subpaths. Node and Svelte stores need none.
 
@@ -43,15 +43,14 @@ export const searchMachine = machine<State, Event>()({
         resolve: (state, event) => ({ _tag: "success", query: state.query, items: event.items }),
         reject: (state, event) => ({ _tag: "failure", query: state.query, error: event.error }),
       },
+      // A new query restarts the request.
+      reenter: ["search"],
       enter: async (state, { send, signal }) => {
-        try {
-          const response = await fetch(`/search?q=${encodeURIComponent(state.query)}`, { signal })
-          // parseItems is your decoder: response.json() is untyped data.
-          send({ _tag: "resolve", items: parseItems(await response.json()) })
-        } catch (error) {
-          send({ _tag: "reject", error: String(error) })
-        }
+        const response = await fetch(`/search?q=${encodeURIComponent(state.query)}`, { signal })
+        // parseItems is your decoder: response.json() is untyped data.
+        send({ _tag: "resolve", items: parseItems(await response.json()) })
       },
+      catch: (error) => ({ _tag: "reject", error: String(error) }),
     },
     success: { to: ["loading"], on: { search } },
     failure: { to: ["loading"], on: { search } },
@@ -63,7 +62,7 @@ export const searchMachine = machine<State, Event>()({
 
 ## Transitions
 
-Each state's `to` lists the other states it may move to. Staying in the same tag is always allowed, so `loading` handles a second `search` without listing itself, and a guard returns `state` to ignore an event. `to: []` marks a final state.
+Each state's `to` lists the other states it may move to. Staying in the same tag is always allowed, so `loading` handles a second `search` without listing itself, and a guard returns `state` to stay as it is. `to: []` marks a final state.
 
 The build fails when:
 
@@ -76,9 +75,52 @@ A handler shared across states has to name the state it returns, as `search` doe
 
 At runtime, `searchMachine.graph` holds the same map, `{ idle: ["loading"], loading: ["success", "failure"], ... }`, typed with its literal tags. Use it to mark final states (`graph[state._tag].length === 0`), draw the machine, or check in a test that every state is reachable. It lists moves, not the events that cause them.
 
+`transition(state, event)` is pure and returns a `Step`:
+
+| Step                         | When                                                                  |
+| ---------------------------- | --------------------------------------------------------------------- |
+| `{ _tag: "ignored" }`        | the state has no handler for the event                                |
+| `{ _tag: "stayed", state }`  | the handler kept the tag; the running effect keeps running            |
+| `{ _tag: "entered", state }` | the handler changed the tag, or the event is in the state's `reenter` |
+
+A guard that returns `state` gives `stayed` with the same object, so "no handler" and "the guard said no" stay apart.
+
 A handler the compiler can't check, through a cast or plain JavaScript, can still return a state its `to` doesn't list. `transition` then throws `IllegalTransition`, with `from` and `to`.
 
 Effect's `Schema.TaggedStruct` and `Data.TaggedEnum` produce `_tag`, so decoded values go straight into `send`.
+
+## Effects
+
+`enter` runs when the machine enters a state, and its `signal` aborts when it leaves. Data that changes while the effect runs stays on the same tag, and the effect keeps running. List the events that should restart it in `reenter`. `catch` turns an error the effect throws or rejects with into an event.
+
+```ts
+uploading: {
+  to: ["idle", "failed", "done"],
+  on: {
+    choose,
+    // Same tag, not in `reenter`: the upload keeps running.
+    progress: (state, event) => ({ ...state, percent: event.percent }),
+    finish: (state, event) => ({ _tag: "done", file: state.file, url: event.url }),
+    fail: (state, event) => ({ _tag: "failed", file: state.file, error: event.error }),
+    cancel: () => ({ _tag: "idle" }),
+  },
+  // A new file replaces the upload in flight: abort it and start again.
+  reenter: ["choose"],
+  enter: async (state, { send, signal }) => {
+    const url = await post(state.file, {
+      signal,
+      progress: (percent) => send({ _tag: "progress", percent }),
+    })
+    send({ _tag: "finish", url })
+  },
+  catch: (error) => ({
+    _tag: "fail",
+    error: error instanceof Error ? error.message : String(error),
+  }),
+},
+```
+
+Without `catch`, an error from `enter` surfaces as an unhandled rejection. It never throws out of `send`.
 
 ## Frameworks
 
@@ -176,33 +218,74 @@ const stop = order.subscribe((state) => console.log(state._tag))
 order.send({ _tag: "pay" })
 ```
 
-For a workflow you persist, skip the actor: `orderMachine.transition(saved, event)` is pure and returns the next state to save.
+### Persisted workflows
+
+For a workflow you save to a database, skip the actor and call `transition`. It makes each step correct, but two requests that load the same row can both pass. Guard the write with a version column, and queue the new state's work in the same transaction:
+
+```ts
+const step = orderMachine.transition(row.state, event)
+if (step._tag === "ignored")
+  return Result.fail(new Ignored({ state: row.state._tag, event: event._tag }))
+
+await db.transaction(async (tx) => {
+  const saved = await tx
+    .update(orders)
+    .set({ state: step.state, version: row.version + 1 })
+    .where(and(eq(orders.id, id), eq(orders.version, row.version)))
+  if (saved.rowCount === 0) throw new Conflict() // reload and retry
+  if (step._tag === "entered") await tx.insert(outbox).values({ orderId: id, state: step.state })
+})
+```
+
+A runtime with one writer per key, such as Restate virtual objects, Effect Cluster entities or Durable Objects, makes the version check unnecessary.
 
 ## How it runs
 
-- `send` with an event the current state doesn't handle returns the same state object, and listeners don't run.
+- `send` with an event the current state doesn't handle does nothing, and listeners don't run. Use `transition` when you need to know.
 - A handler that leaves the graph throws `IllegalTransition` out of `send` and `transition`, and the state stays as it was.
-- `enter` runs when the machine enters a state value and its `signal` aborts when it leaves. A new value with the same tag counts as leaving: a second `search` while `loading` aborts the first request.
-- After `signal` aborts, `send` from that effect does nothing, so a late response can't land.
-- Effects run only while someone subscribes. The first subscriber starts the current state's effect; the last unsubscribe aborts it. An actor nobody subscribes to does nothing, which keeps React StrictMode and server rendering free of side effects.
+- A step aborts the old effect, commits the state, runs the listeners, then starts the new effect. Listeners see each state before its effect can move on, and a throwing listener can't stop the effect from starting.
+- After `signal` aborts, `send` and errors from that effect are dropped, so a late response or an `AbortError` can't land.
+- Effects run only while someone subscribes. A new subscriber sees the current state first; the first subscriber then starts its effect, and the last unsubscribe aborts it. An actor nobody subscribes to does nothing, which keeps React StrictMode and server rendering free of side effects.
 - A `send` from inside an effect or a listener waits until the current step finishes, so listeners see every state in order.
-- A rejected `enter` surfaces as an unhandled rejection. Catch errors and send them as events.
+- An error from `enter`, thrown or rejected, goes to the state's `catch`, or else surfaces as an unhandled rejection.
 
 There is no context, nesting or parallel states. Data lives on the state variant.
 
+## Verifying
+
+`verify` from `/verify` sends every sample event you give it in every state the machine can reach, breadth first. Any event may arrive in any state, as it can from a network.
+
+```ts
+import { verify } from "@understudy-build/mini-fsm/verify"
+
+const report = verify(jobMachine, {
+  events: [{ _tag: "start" }, { _tag: "fail" }, { _tag: "retry" }],
+  invariants: { "at most 3 attempts": (job) => !("attempt" in job) || job.attempt <= 3 },
+})
+```
+
+| Report                                          | Means                                                                      |
+| ----------------------------------------------- | -------------------------------------------------------------------------- |
+| `{ _tag: "verified", states, unreached }`       | every reachable state holds every invariant                                |
+| `{ _tag: "partial", states, depth }`            | nothing broke, but the search hit `depth` (12) with states left; raise it  |
+| `{ _tag: "broken", invariant, initial, trace }` | `trace` is the shortest list of `{ event, state }` that breaks `invariant` |
+
+`verified` holds for the events you pass: a rule that depends on a payload is only tried with the payloads you list. `unreached` lists the states none of them reach: a dead state, or a missing sample event. States are compared as JSON unless you pass `key`. `verify` covers one machine; races between several actors or a database need a model of the whole system, in TLA+ or Quint.
+
 ## API
 
-| Export                         | Signature                                                           |
-| ------------------------------ | ------------------------------------------------------------------- |
-| `machine<State, Event>()(def)` | `{ initial, graph, transition(state, event), enter(state, scope) }` |
-| `actor(machine, initial?)`     | `{ get(), send(event), subscribe(listener) }`, a Svelte store       |
-| `IllegalTransition`            | `Error` with `_tag`, `from` and `to`                                |
-| `/react` `useMachine`          | `[state, send]`                                                     |
-| `/vue` `useMachine`            | `[ShallowRef<state>, send]`                                         |
-| `/solid` `createMachine`       | `[() => state, send]`                                               |
-| `/svelte` `createMachine`      | `{ state, send }`                                                   |
+| Export                               | Signature                                                                   |
+| ------------------------------------ | --------------------------------------------------------------------------- |
+| `machine<State, Event>()(def)`       | `{ initial, graph, transition(state, event) => Step, enter(state, scope) }` |
+| `actor(machine, initial?)`           | `{ get(), send(event), subscribe(listener) }`, a Svelte store               |
+| `IllegalTransition`                  | `Error` with `_tag`, `from` and `to`                                        |
+| `/verify` `verify(machine, options)` | `{ _tag: "verified" \| "partial" \| "broken", ... }`                        |
+| `/react` `useMachine`                | `[state, send]`                                                             |
+| `/vue` `useMachine`                  | `[ShallowRef<state>, send]`                                                 |
+| `/solid` `createMachine`             | `[() => state, send]`                                                       |
+| `/svelte` `createMachine`            | `{ state, send }`                                                           |
 
-Each adapter adds 40 to 80 bytes minified on top of `actor`.
+Each adapter adds 40 to 80 bytes minified on top of `actor`. `/verify` is 905 bytes minified and stays out of bundles that don't import it.
 
 ## Licence
 

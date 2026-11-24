@@ -2,7 +2,7 @@ export type Tagged = { readonly _tag: string }
 
 type Of<U extends Tagged, K extends U["_tag"]> = Extract<U, { readonly _tag: K }>
 
-/** What a state's `enter` effect gets. `signal` aborts when the machine leaves the state value. */
+/** What a state's `enter` effect gets. `signal` aborts when the machine leaves the state. */
 export type Scope<E extends Tagged> = {
   readonly send: (event: E) => void
   readonly signal: AbortSignal
@@ -10,6 +10,15 @@ export type Scope<E extends Tagged> = {
 
 /** For each state tag, the other states it may move to. Staying in the same tag is always allowed. */
 export type Graph<S extends Tagged> = { readonly [K in S["_tag"]]: ReadonlyArray<S["_tag"]> }
+
+/**
+ * What one event did. `ignored`: the state has no handler for it. `stayed`: the machine kept
+ * its tag and its running effect. `entered`: the machine entered a state, so its effect starts.
+ */
+export type Step<S extends Tagged> =
+  | { readonly _tag: "ignored" }
+  | { readonly _tag: "stayed"; readonly state: S }
+  | { readonly _tag: "entered"; readonly state: S }
 
 type Node<
   S extends Tagged,
@@ -22,7 +31,11 @@ type Node<
   readonly on?: {
     readonly [T in E["_tag"]]?: (state: Of<S, K>, event: Of<E, T>) => Of<S, K | To[number]>
   }
+  /** Events whose same-tag result restarts `enter`. Any other same-tag result keeps it running. */
+  readonly reenter?: ReadonlyArray<E["_tag"]>
   readonly enter?: (state: Of<S, K>, scope: Scope<E>) => void | Promise<void>
+  /** Turns an error thrown or rejected by `enter` into an event. Without it, the error is unhandled. */
+  readonly catch?: (error: unknown) => E
 }
 
 export type Definition<S extends Tagged, E extends Tagged, G extends Graph<S>> = {
@@ -34,12 +47,10 @@ export type Definition<S extends Tagged, E extends Tagged, G extends Graph<S>> =
 export type Machine<S extends Tagged, E extends Tagged, G extends Graph<S> = Graph<S>> = {
   readonly initial: S
   readonly graph: G
-  /**
-   * Pure. Returns the same reference when the current state ignores the event, and throws
-   * `IllegalTransition` when a handler returns a state its `to` doesn't list.
-   */
-  readonly transition: (state: S, event: E) => S
-  readonly enter: (state: S, scope: Scope<E>) => void | Promise<void>
+  /** Pure. Throws `IllegalTransition` when a handler returns a state its `to` doesn't list. */
+  readonly transition: (state: S, event: E) => Step<S>
+  /** Starts the state's effect. Never throws: errors become events through `catch`, or go unhandled. */
+  readonly enter: (state: S, scope: Scope<E>) => void
 }
 
 export type Actor<S extends Tagged, E extends Tagged> = {
@@ -65,7 +76,9 @@ export class IllegalTransition extends Error {
 type Loose<S extends Tagged, E extends Tagged> = {
   readonly to: ReadonlyArray<string>
   readonly on?: Readonly<Record<string, ((state: S, event: E) => S) | undefined>>
+  readonly reenter?: ReadonlyArray<string>
   readonly enter?: (state: S, scope: Scope<E>) => void | Promise<void>
+  readonly catch?: (error: unknown) => E
 }
 
 /**
@@ -88,13 +101,30 @@ export const machine =
       graph: graph as never,
       transition: (state, event) => {
         const node = states[state._tag]
-        const next = node?.on?.[event._tag]?.(state, event) ?? state
-        if (next._tag !== state._tag && !node?.to.includes(next._tag)) {
-          throw new IllegalTransition(state._tag, next._tag)
+        const handler = node?.on?.[event._tag]
+        if (!node || !handler) return { _tag: "ignored" }
+        const next = handler(state, event)
+        if (next._tag !== state._tag) {
+          if (!node.to.includes(next._tag)) throw new IllegalTransition(state._tag, next._tag)
+          return { _tag: "entered", state: next }
         }
-        return next
+        // A guard that returns `state` stays, even for a `reenter` event.
+        return next !== state && node.reenter?.includes(event._tag)
+          ? { _tag: "entered", state: next }
+          : { _tag: "stayed", state: next }
       },
-      enter: (state, scope) => states[state._tag]?.enter?.(state, scope),
+      enter: (state, scope) => {
+        const node = states[state._tag]
+        if (!node?.enter) return
+        const run = node.enter
+        // `new Promise` turns a synchronous throw into a rejection, so both take one path.
+        new Promise<void>((resolve) => resolve(run(state, scope))).catch((error: unknown) => {
+          // The state is gone: its late errors are dropped, like its late sends.
+          if (scope.signal.aborted) return
+          if (!node.catch) throw error
+          scope.send(node.catch(error))
+        })
+      },
     }
   }
 
@@ -115,8 +145,7 @@ export const actor = <S extends Tagged, E extends Tagged>(
   const enter = () => {
     const controller = new AbortController()
     running = controller
-    // A rejected effect surfaces as an unhandled rejection, like a failing event handler.
-    void fsm.enter(state, {
+    fsm.enter(state, {
       signal: controller.signal,
       // A late send from a state the machine already left is dropped.
       send: (event) => {
@@ -125,15 +154,19 @@ export const actor = <S extends Tagged, E extends Tagged>(
     })
   }
 
+  // Leave, commit, notify, then enter: listeners never see a state its effect has not settled into,
+  // and an effect never starts for a state listeners have not seen.
   const step = (event: E) => {
-    const next = fsm.transition(state, event)
-    if (next === state) return
-    state = next
-    if (running) {
-      running.abort()
-      enter()
+    const result = fsm.transition(state, event)
+    if (result._tag === "ignored" || result.state === state) return
+    const restart = result._tag === "entered" && running !== undefined
+    if (restart) running?.abort()
+    state = result.state
+    try {
+      for (const listener of listeners) listener(state)
+    } finally {
+      if (restart) enter()
     }
-    for (const listener of listeners) listener(state)
   }
 
   // Run to completion: a send from inside an effect or a listener waits for the current step.
@@ -152,9 +185,10 @@ export const actor = <S extends Tagged, E extends Tagged>(
 
   const subscribe = (listener: (state: S) => void) => {
     const entry = (next: S) => listener(next)
+    // Call first: a throwing listener is never added, and it sees the state its effect starts from.
+    entry(state)
     listeners.add(entry)
     if (listeners.size === 1) enter()
-    entry(state)
     return () => {
       listeners.delete(entry)
       if (listeners.size === 0 && running) {
