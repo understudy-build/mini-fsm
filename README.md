@@ -251,37 +251,41 @@ A runtime with one writer per key, such as Restate virtual objects, Effect Clust
 
 There is no context, nesting or parallel states. Data lives on the state variant.
 
-## Checking
+## Verifying
 
-`check` from `/check` tries every order of the sample events you give it, breadth first, and returns the shortest trace that breaks an invariant. Any event may arrive in any state, as it can from a network, so an invariant that holds here holds for the real machine.
+`verify` from `/verify` sends every sample event you give it in every state the machine can reach, breadth first. Any event may arrive in any state, as it can from a network.
 
 ```ts
-import { check } from "@understudy-build/mini-fsm/check"
+import { verify } from "@understudy-build/mini-fsm/verify"
 
-const report = check(jobMachine, {
+const report = verify(jobMachine, {
   events: [{ _tag: "start" }, { _tag: "fail" }, { _tag: "retry" }],
   invariants: { "at most 3 attempts": (job) => !("attempt" in job) || job.attempt <= 3 },
 })
-// { _tag: "failed", invariant: "at most 3 attempts", initial, trace: [{ event, state }, ...] }
-// or { _tag: "passed", states: 8, unreached: [] }
 ```
 
-`unreached` lists states the search never saw: a dead state, or a missing sample event. States are compared as JSON unless you pass `key`, and the search stops at `depth` (12). `check` covers one machine; races between several actors or a database need a model of the whole system, in TLA+ or Quint.
+| Report                                          | Means                                                                      |
+| ----------------------------------------------- | -------------------------------------------------------------------------- |
+| `{ _tag: "verified", states, unreached }`       | every reachable state holds every invariant                                |
+| `{ _tag: "partial", states, depth }`            | nothing broke, but the search hit `depth` (12) with states left; raise it  |
+| `{ _tag: "broken", invariant, initial, trace }` | `trace` is the shortest list of `{ event, state }` that breaks `invariant` |
+
+`verified` holds for the events you pass: a rule that depends on a payload is only tried with the payloads you list. `unreached` lists the states none of them reach: a dead state, or a missing sample event. States are compared as JSON unless you pass `key`. `verify` covers one machine; races between several actors or a database need a model of the whole system, in TLA+ or Quint.
 
 ## API
 
-| Export                             | Signature                                                                                |
-| ---------------------------------- | ---------------------------------------------------------------------------------------- |
-| `machine<State, Event>()(def)`     | `{ initial, graph, transition(state, event) => Step, enter(state, scope) }`              |
-| `actor(machine, initial?)`         | `{ get(), send(event), subscribe(listener) }`, a Svelte store                            |
-| `IllegalTransition`                | `Error` with `_tag`, `from` and `to`                                                     |
-| `/check` `check(machine, options)` | `{ _tag: "passed", states, unreached } \| { _tag: "failed", invariant, initial, trace }` |
-| `/react` `useMachine`              | `[state, send]`                                                                          |
-| `/vue` `useMachine`                | `[ShallowRef<state>, send]`                                                              |
-| `/solid` `createMachine`           | `[() => state, send]`                                                                    |
-| `/svelte` `createMachine`          | `{ state, send }`                                                                        |
+| Export                               | Signature                                                                   |
+| ------------------------------------ | --------------------------------------------------------------------------- |
+| `machine<State, Event>()(def)`       | `{ initial, graph, transition(state, event) => Step, enter(state, scope) }` |
+| `actor(machine, initial?)`           | `{ get(), send(event), subscribe(listener) }`, a Svelte store               |
+| `IllegalTransition`                  | `Error` with `_tag`, `from` and `to`                                        |
+| `/verify` `verify(machine, options)` | `{ _tag: "verified" \| "partial" \| "broken", ... }`                        |
+| `/react` `useMachine`                | `[state, send]`                                                             |
+| `/vue` `useMachine`                  | `[ShallowRef<state>, send]`                                                 |
+| `/solid` `createMachine`             | `[() => state, send]`                                                       |
+| `/svelte` `createMachine`            | `{ state, send }`                                                           |
 
-Each adapter adds 40 to 80 bytes minified on top of `actor`. `/check` is 763 bytes minified and stays out of bundles that don't import it.
+Each adapter adds 40 to 80 bytes minified on top of `actor`. `/verify` is 905 bytes minified and stays out of bundles that don't import it.
 
 ## Licence
 
