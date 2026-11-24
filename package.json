@@ -1,6 +1,6 @@
 {
   "name": "@understudy-build/mini-fsm",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A minimal finite state machine over TypeScript tagged unions, with React, Vue, Solid and Svelte adapters.",
   "keywords": [
     "discriminated-union",
