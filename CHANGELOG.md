@@ -1,5 +1,19 @@
 # @understudy-build/mini-fsm
 
+## 0.3.0
+
+### Minor Changes
+
+- [#4](https://github.com/understudy-build/mini-fsm/pull/4) [`03b1ecf`](https://github.com/understudy-build/mini-fsm/commit/03b1ecf3b3bd0df2d39ee45115e78e3843a41295) Thanks [@nicolastoulemont](https://github.com/nicolastoulemont)! - `verify` reports `stuck` alongside `unreached` when it returns `verified`: the reached states that list a way out in `to` but that every sample event ignores or leaves as they are, such as a `pending` state that forgot its `confirm` handler. Tests that compare a `verified` report with `toEqual` need the new field.
+
+### Patch Changes
+
+- [#4](https://github.com/understudy-build/mini-fsm/pull/4) [`03b1ecf`](https://github.com/understudy-build/mini-fsm/commit/03b1ecf3b3bd0df2d39ee45115e78e3843a41295) Thanks [@nicolastoulemont](https://github.com/nicolastoulemont)! - A listener or handler that throws inside an effect's `send` no longer reaches the state's `catch`. The actor reports the error as uncaught on a microtask, so a render bug can't move the machine to a failure state, and an error during a step that leaves the state is no longer dropped silently.
+
+- [#4](https://github.com/understudy-build/mini-fsm/pull/4) [`03b1ecf`](https://github.com/understudy-build/mini-fsm/commit/03b1ecf3b3bd0df2d39ee45115e78e3843a41295) Thanks [@nicolastoulemont](https://github.com/nicolastoulemont)! - `verify` takes its event type from the machine, so inline sample events such as `events: [{ _tag: "start" }, { _tag: "fail" }]` typecheck instead of widening to `{ _tag: string }`.
+
+- [#4](https://github.com/understudy-build/mini-fsm/pull/4) [`03b1ecf`](https://github.com/understudy-build/mini-fsm/commit/03b1ecf3b3bd0df2d39ee45115e78e3843a41295) Thanks [@nicolastoulemont](https://github.com/nicolastoulemont)! - `verify` compares states as JSON with sorted keys, so `{ _tag, level }` and `{ level, _tag }` count as one state instead of two, and the `states` count no longer depends on how a handler orders its keys.
+
 ## 0.2.0
 
 ### Minor Changes
