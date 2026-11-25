@@ -1,6 +1,13 @@
-# @understudy-build/mini-fsm
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-dark.svg">
+    <img alt="" src="docs/images/logo.svg" width="88">
+  </picture>
+  <br>
+  mini-fsm
+</h1>
 
-A finite state machine over TypeScript tagged unions, in 1,352 bytes minified (732 gzipped). States and events are plain objects with a `_tag`; each handler sees only the state and event variants it handles, and each state lists the states it may move to.
+A finite state machine over TypeScript tagged unions, in 1.3 kB minified (0.7 kB gzipped). States and events are plain objects with a `_tag`; each handler sees only the state and event variants it handles, and each state lists the states it may move to.
 
 Adapters for React, Vue, Solid 2 and Svelte 5 live at subpaths. Node and Svelte stores need none.
 
