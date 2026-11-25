@@ -1,5 +1,11 @@
 # @understudy-build/mini-fsm
 
+## 0.4.0
+
+### Minor Changes
+
+- [#6](https://github.com/understudy-build/mini-fsm/pull/6) [`700f537`](https://github.com/understudy-build/mini-fsm/commit/700f537e8a0667de2e7ed05516fd1402ff36c57e) Thanks [@nicolastoulemont](https://github.com/nicolastoulemont)! - `machine.accepts(state, event)` tells whether an event would change the state: `false` when the state has no handler for it or a guard returns `state`. Use it to disable the control that sends the event instead of repeating the machine's rules in the view.
+
 ## 0.3.0
 
 ### Minor Changes
