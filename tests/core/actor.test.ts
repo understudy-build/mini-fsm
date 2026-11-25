@@ -269,3 +269,26 @@ test("a listener that throws during an effect's send is reported, not turned int
   expect(reported).toHaveLength(1)
   expect(reported[0]).toThrow(render)
 })
+
+test("accepts an event that moves the machine or updates its state", () => {
+  expect(searchMachine.accepts({ _tag: "idle" }, { _tag: "search", query: "ts" })).toBe(true)
+  // Same tag, new value: a second search while one is loading.
+  expect(
+    searchMachine.accepts({ _tag: "loading", query: "t" }, { _tag: "search", query: "ts" }),
+  ).toBe(true)
+})
+
+test("does not accept an event the state ignores or a guard refuses", () => {
+  type Door = { _tag: "closed"; locked: boolean } | { _tag: "open" }
+  const door = machine<Door, { _tag: "push" } | { _tag: "lock" }>()({
+    initial: { _tag: "closed", locked: true },
+    states: {
+      closed: { to: ["open"], on: { push: (state) => (state.locked ? state : { _tag: "open" }) } },
+      open: { to: [] },
+    },
+  })
+
+  expect(door.accepts({ _tag: "closed", locked: false }, { _tag: "lock" })).toBe(false)
+  expect(door.accepts({ _tag: "closed", locked: true }, { _tag: "push" })).toBe(false)
+  expect(door.accepts({ _tag: "closed", locked: false }, { _tag: "push" })).toBe(true)
+})
