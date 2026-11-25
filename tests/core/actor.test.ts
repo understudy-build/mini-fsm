@@ -227,3 +227,45 @@ test("transition reports an event the state has no handler for", () => {
     _tag: "ignored",
   })
 })
+
+test("a listener that throws during an effect's send is reported, not turned into the effect's failure", async () => {
+  type Upload =
+    | { _tag: "uploading"; pct: number }
+    | { _tag: "done" }
+    | { _tag: "failed"; error: string }
+  const upload = machine<
+    Upload,
+    { _tag: "progress"; pct: number } | { _tag: "fail"; error: string }
+  >()({
+    initial: { _tag: "uploading", pct: 0 },
+    states: {
+      uploading: {
+        to: ["done", "failed"],
+        on: {
+          progress: (state, event) => ({ ...state, pct: event.pct }),
+          fail: (_, event) => ({ _tag: "failed", error: event.error }),
+        },
+        enter: async (_, { send }) => {
+          await Promise.resolve()
+          send({ _tag: "progress", pct: 50 })
+        },
+        catch: (error) => ({ _tag: "fail", error: String(error) }),
+      },
+      done: { to: [] },
+      failed: { to: [] },
+    },
+  })
+  const reported: Array<() => void> = []
+  vi.stubGlobal("queueMicrotask", (task: () => void) => reported.push(task))
+  const render = new Error("render")
+  const running = actor(upload)
+
+  running.subscribe((state) => {
+    if (state._tag === "uploading" && state.pct === 50) throw render
+  })
+  await settle()
+
+  expect(running.get()).toEqual({ _tag: "uploading", pct: 50 })
+  expect(reported).toHaveLength(1)
+  expect(reported[0]).toThrow(render)
+})

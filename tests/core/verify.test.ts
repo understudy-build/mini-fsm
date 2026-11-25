@@ -58,10 +58,17 @@ test("finds the shortest trace that breaks an invariant", () => {
 })
 
 test("verifies a machine once every reachable state holds its invariants", () => {
-  expect(verify(fixed, { events, invariants })).toEqual({
+  // Inline, as in the README: the event literals must type against the machine's events.
+  const report = verify(fixed, {
+    events: [{ _tag: "start" }, { _tag: "fail" }, { _tag: "retry" }],
+    invariants: { "at most 3 attempts": (state) => !("attempt" in state) || state.attempt <= 3 },
+  })
+
+  expect(report).toEqual({
     _tag: "verified",
     states: 8,
     unreached: [],
+    stuck: [],
   })
 })
 
@@ -84,5 +91,45 @@ test("names the states the sample events never reach", () => {
     _tag: "verified",
     states: 1,
     unreached: ["loading", "success", "failure"],
+    stuck: ["idle"],
+  })
+})
+
+test("names a state that lists a way out but no sample event takes", () => {
+  type Order = { _tag: "cart" } | { _tag: "pending" } | { _tag: "done" }
+  const order = machine<Order, { _tag: "pay" } | { _tag: "confirm" }>()({
+    initial: { _tag: "cart" },
+    states: {
+      cart: { to: ["pending"], on: { pay: () => ({ _tag: "pending" }) } },
+      // Forgot `on: { confirm }`: nothing moves the order on.
+      pending: { to: ["done"] },
+      done: { to: [] },
+    },
+  })
+
+  expect(verify(order, { events: [{ _tag: "pay" }, { _tag: "confirm" }] })).toEqual({
+    _tag: "verified",
+    states: 2,
+    unreached: ["done"],
+    stuck: ["pending"],
+  })
+})
+
+test("counts states equal up to key order once", () => {
+  type Dial = { _tag: "off" } | { _tag: "on"; level: number }
+  const dial = machine<Dial, { _tag: "turn" } | { _tag: "twist" }>()({
+    initial: { _tag: "off" },
+    states: {
+      off: {
+        to: ["on"],
+        on: { turn: () => ({ _tag: "on", level: 1 }), twist: () => ({ level: 1, _tag: "on" }) },
+      },
+      on: { to: ["off"], on: { turn: () => ({ _tag: "off" }) } },
+    },
+  })
+
+  expect(verify(dial, { events: [{ _tag: "turn" }, { _tag: "twist" }] })).toMatchObject({
+    _tag: "verified",
+    states: 2,
   })
 })

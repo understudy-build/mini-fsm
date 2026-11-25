@@ -149,7 +149,15 @@ export const actor = <S extends Tagged, E extends Tagged>(
       signal: controller.signal,
       // A late send from a state the machine already left is dropped.
       send: (event) => {
-        if (!controller.signal.aborted) send(event)
+        if (controller.signal.aborted) return
+        try {
+          send(event)
+        } catch (error) {
+          // A listener or handler bug isn't the effect failing: report it instead of reaching `catch`.
+          queueMicrotask(() => {
+            throw error
+          })
+        }
       },
     })
   }

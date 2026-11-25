@@ -7,14 +7,17 @@ export type Trace<S extends Tagged, E extends Tagged> = ReadonlyArray<{
 
 /**
  * `verified`: the search checked every state the events can reach, and every invariant held;
- * `unreached` lists the tags none of them reach. `partial`: no invariant broke, but `depth` cut
- * the search off with states left to check. `broken`: the shortest trace that breaks `invariant`.
+ * `unreached` lists the tags none of them reach, and `stuck` the tags of reached states that list
+ * a way out in `to` but that every sample event leaves as they are. `partial`: no invariant broke,
+ * but `depth` cut the search off with states left to check. `broken`: the shortest trace that
+ * breaks `invariant`.
  */
 export type Report<S extends Tagged, E extends Tagged> =
   | {
       readonly _tag: "verified"
       readonly states: number
       readonly unreached: ReadonlyArray<S["_tag"]>
+      readonly stuck: ReadonlyArray<S["_tag"]>
     }
   | { readonly _tag: "partial"; readonly states: number; readonly depth: number }
   | {
@@ -24,11 +27,19 @@ export type Report<S extends Tagged, E extends Tagged> =
       readonly trace: Trace<S, E>
     }
 
+// Sorted keys, so `{ _tag, n }` and `{ n, _tag }` are one state.
+const json = (state: unknown) =>
+  JSON.stringify(state, (_, value: unknown) =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).toSorted(([a], [b]) => (a < b ? -1 : 1)))
+      : value,
+  )
+
 /**
  * Sends every one of `events` in every state the machine can reach from `machine.initial`,
  * breadth first, so a broken invariant comes with its shortest trace. Each event may arrive in
- * any state, as it can from a network. States are compared by `key`, JSON by default, so keep
- * them plain data.
+ * any state, as it can from a network. States are compared by `key`, JSON with sorted keys by
+ * default, so keep them plain data.
  */
 export const verify = <S extends Tagged, E extends Tagged>(
   fsm: Machine<S, E>,
@@ -36,9 +47,10 @@ export const verify = <S extends Tagged, E extends Tagged>(
     events,
     invariants = {},
     depth = 12,
-    key = JSON.stringify,
+    key = json,
   }: {
-    readonly events: ReadonlyArray<E>
+    // Infer `E` from the machine alone, so inline events keep their literal tags.
+    readonly events: ReadonlyArray<NoInfer<E>>
     readonly invariants?: Readonly<Record<string, (state: S) => boolean>>
     readonly depth?: number
     readonly key?: (state: S) => string
@@ -84,5 +96,19 @@ export const verify = <S extends Tagged, E extends Tagged>(
   const reached = new Set([...seen.values()].map((state) => state._tag))
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion
   const tags = Object.keys(fsm.graph) as Array<S["_tag"]>
-  return { _tag: "verified", states: seen.size, unreached: tags.filter((tag) => !reached.has(tag)) }
+  // A state that may move on but that no sample event changes, such as `loading` with no `resolve`.
+  const stuck = [...seen.values()].filter(
+    (state) =>
+      fsm.graph[state._tag as S["_tag"]].length > 0 &&
+      events.every((event) => {
+        const step = fsm.transition(state, event)
+        return step._tag === "ignored" || key(step.state) === key(state)
+      }),
+  )
+  return {
+    _tag: "verified",
+    states: seen.size,
+    unreached: tags.filter((tag) => !reached.has(tag)),
+    stuck: [...new Set(stuck.map((state) => state._tag))],
+  }
 }
