@@ -7,7 +7,7 @@
   mini-fsm
 </h1>
 
-A finite state machine over TypeScript tagged unions, in 1.3 kB minified (0.7 kB gzipped). States and events are plain objects with a `_tag`; each handler sees only the state and event variants it handles, and each state lists the states it may move to.
+A finite state machine over TypeScript tagged unions, in 1.4 kB minified (0.8 kB gzipped). States and events are plain objects with a `_tag`; each handler sees only the state and event variants it handles, and each state lists the states it may move to.
 
 Adapters for React, Vue, Solid 2 and Svelte 5 live at subpaths. Node and Svelte stores need none.
 
@@ -127,7 +127,7 @@ uploading: {
 },
 ```
 
-Without `catch`, an error from `enter` surfaces as an unhandled rejection. It never throws out of `send`.
+Without `catch`, an error from `enter` surfaces as an unhandled rejection. It never throws out of `send`. An error from a listener or handler during the effect's `send`, such as a render bug, is reported as an uncaught error and never reaches `catch`, so it can't move the machine to a failure state.
 
 ## Frameworks
 
@@ -254,7 +254,7 @@ A runtime with one writer per key, such as Restate virtual objects, Effect Clust
 - After `signal` aborts, `send` and errors from that effect are dropped, so a late response or an `AbortError` can't land.
 - Effects run only while someone subscribes. A new subscriber sees the current state first; the first subscriber then starts its effect, and the last unsubscribe aborts it. An actor nobody subscribes to does nothing, which keeps React StrictMode and server rendering free of side effects.
 - A `send` from inside an effect or a listener waits until the current step finishes, so listeners see every state in order.
-- An error from `enter`, thrown or rejected, goes to the state's `catch`, or else surfaces as an unhandled rejection.
+- An error from `enter`, thrown or rejected, goes to the state's `catch`, or else surfaces as an unhandled rejection. A listener or handler that throws inside an effect's `send` is reported on a microtask instead, so it can't reach `catch`.
 
 There is no context, nesting or parallel states. Data lives on the state variant.
 
@@ -271,13 +271,13 @@ const report = verify(jobMachine, {
 })
 ```
 
-| Report                                          | Means                                                                      |
-| ----------------------------------------------- | -------------------------------------------------------------------------- |
-| `{ _tag: "verified", states, unreached }`       | every reachable state holds every invariant                                |
-| `{ _tag: "partial", states, depth }`            | nothing broke, but the search hit `depth` (12) with states left; raise it  |
-| `{ _tag: "broken", invariant, initial, trace }` | `trace` is the shortest list of `{ event, state }` that breaks `invariant` |
+| Report                                           | Means                                                                      |
+| ------------------------------------------------ | -------------------------------------------------------------------------- |
+| `{ _tag: "verified", states, unreached, stuck }` | every reachable state holds every invariant                                |
+| `{ _tag: "partial", states, depth }`             | nothing broke, but the search hit `depth` (12) with states left; raise it  |
+| `{ _tag: "broken", invariant, initial, trace }`  | `trace` is the shortest list of `{ event, state }` that breaks `invariant` |
 
-`verified` holds for the events you pass: a rule that depends on a payload is only tried with the payloads you list. `unreached` lists the states none of them reach: a dead state, or a missing sample event. States are compared as JSON unless you pass `key`. `verify` covers one machine; races between several actors or a database need a model of the whole system, in TLA+ or Quint.
+`verified` holds for the events you pass: a rule that depends on a payload is only tried with the payloads you list. `unreached` lists the states none of them reach: a dead state, or a missing sample event. `stuck` lists the reached states that name a way out in `to` but that every sample event leaves as they are, such as a `pending` state with no handler for `confirm`. States are compared as JSON with sorted keys unless you pass `key`. `verify` covers one machine; races between several actors or a database need a model of the whole system, in TLA+ or Quint.
 
 ## API
 
@@ -292,7 +292,7 @@ const report = verify(jobMachine, {
 | `/solid` `createMachine`             | `[() => state, send]`                                                       |
 | `/svelte` `createMachine`            | `{ state, send }`                                                           |
 
-Each adapter adds 40 to 80 bytes minified on top of `actor`. `/verify` is 905 bytes minified and stays out of bundles that don't import it.
+Each adapter adds 40 to 80 bytes minified on top of `actor`. `/verify` is 1.2 kB minified and stays out of bundles that don't import it.
 
 ## Licence
 
