@@ -7,7 +7,7 @@
   mini-fsm
 </h1>
 
-A finite state machine over TypeScript tagged unions, in 1.4 kB minified (0.8 kB gzipped). States and events are plain objects with a `_tag`; each handler sees only the state and event variants it handles, and each state lists the states it may move to.
+A finite state machine over TypeScript tagged unions, in 1.5 kB minified (0.8 kB gzipped). States and events are plain objects with a `_tag`; each handler sees only the state and event variants it handles, and each state lists the states it may move to.
 
 Adapters for React, Vue, Solid 2 and Svelte 5 live at subpaths. Node and Svelte stores need none.
 
@@ -91,6 +91,17 @@ At runtime, `searchMachine.graph` holds the same map, `{ idle: ["loading"], load
 | `{ _tag: "entered", state }` | the handler changed the tag, or the event is in the state's `reenter` |
 
 A guard that returns `state` gives `stayed` with the same object, so "no handler" and "the guard said no" stay apart.
+
+`accepts(state, event)` asks whether the event would change the state. It is `false` when the state has no handler for the event or a guard returns `state`, so a control can disable itself from the machine's own rules instead of repeating them:
+
+```tsx
+const pay = { _tag: "pay" } as const
+
+// Disabled in every state without a `pay` handler, and wherever its guard says no.
+<button disabled={!orderMachine.accepts(state, pay)} onClick={() => send(pay)}>
+  Pay
+</button>
+```
 
 A handler the compiler can't check, through a cast or plain JavaScript, can still return a state its `to` doesn't list. `transition` then throws `IllegalTransition`, with `from` and `to`.
 
@@ -281,16 +292,16 @@ const report = verify(jobMachine, {
 
 ## API
 
-| Export                               | Signature                                                                   |
-| ------------------------------------ | --------------------------------------------------------------------------- |
-| `machine<State, Event>()(def)`       | `{ initial, graph, transition(state, event) => Step, enter(state, scope) }` |
-| `actor(machine, initial?)`           | `{ get(), send(event), subscribe(listener) }`, a Svelte store               |
-| `IllegalTransition`                  | `Error` with `_tag`, `from` and `to`                                        |
-| `/verify` `verify(machine, options)` | `{ _tag: "verified" \| "partial" \| "broken", ... }`                        |
-| `/react` `useMachine`                | `[state, send]`                                                             |
-| `/vue` `useMachine`                  | `[ShallowRef<state>, send]`                                                 |
-| `/solid` `createMachine`             | `[() => state, send]`                                                       |
-| `/svelte` `createMachine`            | `{ state, send }`                                                           |
+| Export                               | Signature                                                                                          |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| `machine<State, Event>()(def)`       | `{ initial, graph, transition(state, event) => Step, accepts(state, event), enter(state, scope) }` |
+| `actor(machine, initial?)`           | `{ get(), send(event), subscribe(listener) }`, a Svelte store                                      |
+| `IllegalTransition`                  | `Error` with `_tag`, `from` and `to`                                                               |
+| `/verify` `verify(machine, options)` | `{ _tag: "verified" \| "partial" \| "broken", ... }`                                               |
+| `/react` `useMachine`                | `[state, send]`                                                                                    |
+| `/vue` `useMachine`                  | `[ShallowRef<state>, send]`                                                                        |
+| `/solid` `createMachine`             | `[() => state, send]`                                                                              |
+| `/svelte` `createMachine`            | `{ state, send }`                                                                                  |
 
 Each adapter adds 40 to 80 bytes minified on top of `actor`. `/verify` is 1.2 kB minified and stays out of bundles that don't import it.
 

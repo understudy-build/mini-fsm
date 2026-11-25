@@ -49,6 +49,11 @@ export type Machine<S extends Tagged, E extends Tagged, G extends Graph<S> = Gra
   readonly graph: G
   /** Pure. Throws `IllegalTransition` when a handler returns a state its `to` doesn't list. */
   readonly transition: (state: S, event: E) => Step<S>
+  /**
+   * Whether `event` would change `state`: false when the state has no handler for it or a guard
+   * returns `state`. Use it to disable the control that sends the event.
+   */
+  readonly accepts: (state: S, event: E) => boolean
   /** Starts the state's effect. Never throws: errors become events through `catch`, or go unhandled. */
   readonly enter: (state: S, scope: Scope<E>) => void
 }
@@ -94,24 +99,29 @@ export const machine =
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion
     const states = definition.states as unknown as Readonly<Record<string, Loose<S, E>>>
     const graph = Object.fromEntries(Object.entries(states).map(([tag, node]) => [tag, node.to]))
+    const transition = (state: S, event: E): Step<S> => {
+      const node = states[state._tag]
+      const handler = node?.on?.[event._tag]
+      if (!node || !handler) return { _tag: "ignored" }
+      const next = handler(state, event)
+      if (next._tag !== state._tag) {
+        if (!node.to.includes(next._tag)) throw new IllegalTransition(state._tag, next._tag)
+        return { _tag: "entered", state: next }
+      }
+      // A guard that returns `state` stays, even for a `reenter` event.
+      return next !== state && node.reenter?.includes(event._tag)
+        ? { _tag: "entered", state: next }
+        : { _tag: "stayed", state: next }
+    }
     return {
       initial: definition.initial,
       // `fromEntries` drops the keys, which are exactly the tags `G` maps.
       // oxlint-disable-next-line typescript/no-unsafe-type-assertion
       graph: graph as never,
-      transition: (state, event) => {
-        const node = states[state._tag]
-        const handler = node?.on?.[event._tag]
-        if (!node || !handler) return { _tag: "ignored" }
-        const next = handler(state, event)
-        if (next._tag !== state._tag) {
-          if (!node.to.includes(next._tag)) throw new IllegalTransition(state._tag, next._tag)
-          return { _tag: "entered", state: next }
-        }
-        // A guard that returns `state` stays, even for a `reenter` event.
-        return next !== state && node.reenter?.includes(event._tag)
-          ? { _tag: "entered", state: next }
-          : { _tag: "stayed", state: next }
+      transition,
+      accepts: (state, event) => {
+        const step = transition(state, event)
+        return step._tag !== "ignored" && step.state !== state
       },
       enter: (state, scope) => {
         const node = states[state._tag]
