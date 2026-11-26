@@ -29,6 +29,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./persist": {
+      "types": "./dist/persist.d.ts",
+      "default": "./dist/persist.js"
+    },
     "./verify": {
       "types": "./dist/verify.d.ts",
       "default": "./dist/verify.js"
@@ -72,6 +76,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vue/test-utils": "^2.6.0",
+    "effect": "^4.1.5",
     "happy-dom": "^21.0.4",
     "oxfmt": "^0.77.0",
     "oxlint": "1.92.0",
@@ -84,7 +89,8 @@
     "tsrs": "0.25.0-ts7.1.0-beta",
     "vite": "^8.3.8",
     "vitest": "^5.1.1",
-    "vue": "3.5.45"
+    "vue": "3.5.45",
+    "zod": "^4.6.7"
   },
   "peerDependencies": {
     "react": ">=18",

@@ -21,6 +21,12 @@
   "ignorePatterns": ["dist/**"],
   "overrides": [
     {
+      "files": ["src/standard-schema.ts"],
+      "rules": {
+        "typescript/no-duplicate-type-constituents": "off"
+      }
+    },
+    {
       "files": ["tests/**"],
       "rules": {
         "typescript/no-unsafe-type-assertion": "off"

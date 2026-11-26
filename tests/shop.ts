@@ -1,3 +1,6 @@
+import { Schema } from "effect"
+import { z } from "zod"
+
 import { machine } from "../src/index.ts"
 
 export type Cart =
@@ -40,3 +43,16 @@ export const shop = (log: (line: string) => void) =>
       paid: { to: [] },
     },
   })
+
+// What a reload may resume: `paid` is left out, so a finished order starts a new cart.
+export const CartZod = z.discriminatedUnion("_tag", [
+  z.object({ _tag: z.literal("cart"), items: z.number() }),
+  z.object({ _tag: z.literal("paying"), items: z.number() }),
+])
+
+export const CartEffect = Schema.toStandardSchemaV1(
+  Schema.Union([
+    Schema.TaggedStruct("cart", { items: Schema.Number }),
+    Schema.TaggedStruct("paying", { items: Schema.Number }),
+  ]),
+)
