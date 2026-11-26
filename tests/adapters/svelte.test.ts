@@ -5,6 +5,7 @@ import { afterEach, expect, test, vi } from "vitest"
 
 import { fakeFetch } from "../utils.ts"
 import Search from "./Search.svelte"
+import Shop from "./Shop.svelte"
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -37,4 +38,16 @@ test("unmount aborts the request in flight", async () => {
   await unmount(component)
 
   await vi.waitFor(() => expect(requests[0]!.signal.aborted).toBe(true))
+})
+
+test("a control follows what the machine can take", () => {
+  mount(Shop, { target: document.body })
+  flushSync()
+  const pay = screen.getByRole("button", { name: "Pay" })
+  expect(pay).toHaveProperty("disabled", true)
+
+  fireEvent.click(screen.getByRole("button", { name: "Add" }))
+  flushSync()
+
+  expect(pay).toHaveProperty("disabled", false)
 })

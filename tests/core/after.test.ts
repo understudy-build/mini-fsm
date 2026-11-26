@@ -2,48 +2,11 @@ import { afterEach, expect, test, vi } from "vitest"
 
 import { actor, IllegalTransition, machine, type After } from "../../src/index.ts"
 import { verify } from "../../src/verify.ts"
+import { shop, type Cart } from "../shop.ts"
 
 afterEach(() => {
   vi.unstubAllGlobals()
 })
-
-type Cart =
-  | { readonly _tag: "cart"; readonly items: number }
-  | { readonly _tag: "paying"; readonly items: number }
-  | { readonly _tag: "paid" }
-type CartEvent = { readonly _tag: "add" } | { readonly _tag: "pay" } | { readonly _tag: "confirm" }
-
-// A factory machine: its handlers queue calls to the dependencies it closes over.
-const shop = (log: (line: string) => void) =>
-  machine<Cart, CartEvent>()({
-    initial: { _tag: "cart", items: 0 },
-    states: {
-      cart: {
-        to: ["paying"],
-        on: {
-          add: (state, _, after) => {
-            after(() => log("toast: Added"))
-            return { ...state, items: state.items + 1 }
-          },
-          pay: (state, _, after) => {
-            if (state.items === 0) {
-              after(() => log("toast: Your cart is empty"))
-              return state
-            }
-            after(() => log("toast: Paying"))
-            after(() => log("track: pay"))
-            return { _tag: "paying", items: state.items }
-          },
-        },
-      },
-      paying: {
-        to: ["paid"],
-        on: { confirm: () => ({ _tag: "paid" }) },
-        enter: () => log("charge"),
-      },
-      paid: { to: [] },
-    },
-  })
 
 test("an output runs once per send, however many listen", () => {
   const lines: Array<string> = []
