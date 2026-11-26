@@ -65,9 +65,7 @@ export const verify = <S extends Tagged, E extends Tagged>(
   const next = (state: S) =>
     events.flatMap((event) => {
       const step = fsm.transition(state, event)
-      return step._tag === "ignored" || seen.has(key(step.state))
-        ? []
-        : [{ event, state: step.state }]
+      return !("state" in step) || seen.has(key(step.state)) ? [] : [{ event, state: step.state }]
     })
 
   let frontier: Array<{ readonly state: S; readonly trace: Trace<S, E> }> = [
@@ -97,12 +95,13 @@ export const verify = <S extends Tagged, E extends Tagged>(
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion
   const tags = Object.keys(fsm.graph) as Array<S["_tag"]>
   // A state that may move on but that no sample event changes, such as `loading` with no `resolve`.
+  // A new object with the same content changes nothing either.
   const stuck = [...seen.values()].filter(
     (state) =>
       fsm.graph[state._tag as S["_tag"]].length > 0 &&
       events.every((event) => {
         const step = fsm.transition(state, event)
-        return step._tag === "ignored" || key(step.state) === key(state)
+        return !("state" in step) || key(step.state) === key(state)
       }),
   )
   return {

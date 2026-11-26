@@ -11,14 +11,21 @@ export type Scope<E extends Tagged> = {
 /** For each state tag, the other states it may move to. Staying in the same tag is always allowed. */
 export type Graph<S extends Tagged> = { readonly [K in S["_tag"]]: ReadonlyArray<S["_tag"]> }
 
+/** Queues a side effect to run once, after this step commits. Never runs on restore, in `verify` or in `can`. */
+export type After = (run: () => void) => void
+
+type Outputs = ReadonlyArray<() => void>
+
 /**
- * What one event did. `ignored`: the state has no handler for it. `stayed`: the machine kept
- * its tag and its running effect. `entered`: the machine entered a state, so its effect starts.
+ * What one event did. `ignored`: the state has no handler for it. `refused`: a guard returned
+ * `state`. `stayed`: the machine kept its tag and its running effect. `entered`: the machine
+ * entered a state, so its effect starts. `outputs` holds what the handler queued with `after`.
  */
 export type Step<S extends Tagged> =
   | { readonly _tag: "ignored" }
-  | { readonly _tag: "stayed"; readonly state: S }
-  | { readonly _tag: "entered"; readonly state: S }
+  | { readonly _tag: "refused"; readonly outputs: Outputs }
+  | { readonly _tag: "stayed"; readonly state: S; readonly outputs: Outputs }
+  | { readonly _tag: "entered"; readonly state: S; readonly outputs: Outputs }
 
 type Node<
   S extends Tagged,
@@ -29,7 +36,11 @@ type Node<
   /** The other states this one may move to. `[]` marks a final state. */
   readonly to: To
   readonly on?: {
-    readonly [T in E["_tag"]]?: (state: Of<S, K>, event: Of<E, T>) => Of<S, K | To[number]>
+    readonly [T in E["_tag"]]?: (
+      state: Of<S, K>,
+      event: Of<E, T>,
+      after: After,
+    ) => Of<S, K | To[number]>
   }
   /** Events whose same-tag result restarts `enter`. Any other same-tag result keeps it running. */
   readonly reenter?: ReadonlyArray<E["_tag"]>
@@ -47,13 +58,16 @@ export type Definition<S extends Tagged, E extends Tagged, G extends Graph<S>> =
 export type Machine<S extends Tagged, E extends Tagged, G extends Graph<S> = Graph<S>> = {
   readonly initial: S
   readonly graph: G
-  /** Pure. Throws `IllegalTransition` when a handler returns a state its `to` doesn't list. */
+  /**
+   * Pure: it collects what handlers queue with `after` and runs none of it. Throws
+   * `IllegalTransition` when a handler returns a state its `to` doesn't list.
+   */
   readonly transition: (state: S, event: E) => Step<S>
   /**
    * Whether `event` would change `state`: false when the state has no handler for it or a guard
-   * returns `state`. Use it to disable the control that sends the event.
+   * returns `state`. Use it to disable the control that sends the event. Runs no outputs.
    */
-  readonly accepts: (state: S, event: E) => boolean
+  readonly can: (state: S, event: E) => boolean
   /** Starts the state's effect. Never throws: errors become events through `catch`, or go unhandled. */
   readonly enter: (state: S, scope: Scope<E>) => void
 }
@@ -61,6 +75,8 @@ export type Machine<S extends Tagged, E extends Tagged, G extends Graph<S> = Gra
 export type Actor<S extends Tagged, E extends Tagged> = {
   readonly get: () => S
   readonly send: (event: E) => void
+  /** `machine.can` against the current state. */
+  readonly can: (event: E) => boolean
   /** Svelte store contract: calls `listener` now, then on every change. */
   readonly subscribe: (listener: (state: S) => void) => () => void
 }
@@ -80,7 +96,7 @@ export class IllegalTransition extends Error {
 
 type Loose<S extends Tagged, E extends Tagged> = {
   readonly to: ReadonlyArray<string>
-  readonly on?: Readonly<Record<string, ((state: S, event: E) => S) | undefined>>
+  readonly on?: Readonly<Record<string, ((state: S, event: E, after: After) => S) | undefined>>
   readonly reenter?: ReadonlyArray<string>
   readonly enter?: (state: S, scope: Scope<E>) => void | Promise<void>
   readonly catch?: (error: unknown) => E
@@ -103,15 +119,28 @@ export const machine =
       const node = states[state._tag]
       const handler = node?.on?.[event._tag]
       if (!node || !handler) return { _tag: "ignored" }
-      const next = handler(state, event)
+      const outputs: Array<() => void> = []
+      let open = true
+      let next: S
+      try {
+        next = handler(state, event, (run) => {
+          if (!open) throw new Error("`after` was called once its handler returned")
+          outputs.push(run)
+        })
+      } finally {
+        open = false
+      }
+      // A guard that returns `state` refuses, even for a `reenter` event.
+      if (next === state) return { _tag: "refused", outputs }
       if (next._tag !== state._tag) {
         if (!node.to.includes(next._tag)) throw new IllegalTransition(state._tag, next._tag)
-        return { _tag: "entered", state: next }
+        return { _tag: "entered", state: next, outputs }
       }
-      // A guard that returns `state` stays, even for a `reenter` event.
-      return next !== state && node.reenter?.includes(event._tag)
-        ? { _tag: "entered", state: next }
-        : { _tag: "stayed", state: next }
+      return {
+        _tag: node.reenter?.includes(event._tag) ? "entered" : "stayed",
+        state: next,
+        outputs,
+      }
     }
     return {
       initial: definition.initial,
@@ -119,10 +148,8 @@ export const machine =
       // oxlint-disable-next-line typescript/no-unsafe-type-assertion
       graph: graph as never,
       transition,
-      accepts: (state, event) => {
-        const step = transition(state, event)
-        return step._tag !== "ignored" && step.state !== state
-      },
+      // `stayed` or `entered`.
+      can: (state, event) => "state" in transition(state, event),
       enter: (state, scope) => {
         const node = states[state._tag]
         if (!node?.enter) return
@@ -172,16 +199,21 @@ export const actor = <S extends Tagged, E extends Tagged>(
     })
   }
 
-  // Leave, commit, notify, then enter: listeners never see a state its effect has not settled into,
-  // and an effect never starts for a state listeners have not seen.
+  // Leave, commit, notify, run outputs, then enter: listeners never see a state its effect has not
+  // settled into, outputs see the committed state, and an effect never starts for a state listeners
+  // have not seen. A refused step only runs its outputs. The first throw stops the listeners and
+  // outputs left, and leaves `send` once the effect has started.
   const step = (event: E) => {
     const result = fsm.transition(state, event)
-    if (result._tag === "ignored" || result.state === state) return
+    if (result._tag === "ignored") return
     const restart = result._tag === "entered" && running !== undefined
     if (restart) running?.abort()
-    state = result.state
     try {
-      for (const listener of listeners) listener(state)
+      if (result._tag !== "refused") {
+        state = result.state
+        for (const listener of listeners) listener(state)
+      }
+      for (const run of result.outputs) run()
     } finally {
       if (restart) enter()
     }
@@ -216,5 +248,5 @@ export const actor = <S extends Tagged, E extends Tagged>(
     }
   }
 
-  return { get: () => state, send, subscribe }
+  return { get: () => state, send, can: (event) => fsm.can(state, event), subscribe }
 }

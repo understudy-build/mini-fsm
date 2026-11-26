@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
-import { StrictMode } from "react"
+import { StrictMode, useMemo } from "react"
 import { afterEach, expect, test, vi } from "vitest"
 
 import { useMachine } from "../../src/adapters/react.ts"
 import { searchMachine, type State } from "../search.ts"
+import { shop } from "../shop.ts"
 import { fakeFetch } from "../utils.ts"
 
 afterEach(() => {
@@ -61,4 +62,53 @@ test("StrictMode remount aborts the first request and keeps the second", async (
 
   expect(screen.getByRole("listitem").textContent).toBe("typescript")
   expect(screen.queryByRole("alert")).toBeNull()
+})
+
+const Shop = ({ log }: { log: (line: string) => void }) => {
+  const cart = useMemo(() => shop(log), [log])
+  const [state, send, can] = useMachine(cart)
+  return (
+    <div>
+      <button type="button" onClick={() => send({ _tag: "add" })}>
+        Add
+      </button>
+      <button type="button" disabled={!can({ _tag: "pay" })} onClick={() => send({ _tag: "pay" })}>
+        Pay
+      </button>
+      <p>{state._tag}</p>
+    </div>
+  )
+}
+
+test("a control follows what the machine can take", () => {
+  render(<Shop log={() => {}} />)
+  const pay = screen.getByRole("button", { name: "Pay" })
+  expect(pay).toHaveProperty("disabled", true)
+
+  fireEvent.click(screen.getByRole("button", { name: "Add" }))
+
+  expect(pay).toHaveProperty("disabled", false)
+})
+
+test("a machine rebuilt by `useMemo` keeps the state and runs the next step through its new handlers", () => {
+  const first: Array<string> = []
+  const second: Array<string> = []
+  const { rerender } = render(
+    <StrictMode>
+      <Shop log={(line) => first.push(line)} />
+    </StrictMode>,
+  )
+  fireEvent.click(screen.getByRole("button", { name: "Add" }))
+
+  rerender(
+    <StrictMode>
+      <Shop log={(line) => second.push(line)} />
+    </StrictMode>,
+  )
+  fireEvent.click(screen.getByRole("button", { name: "Pay" }))
+
+  expect(screen.getByText("paying")).toBeTruthy()
+  expect(first).toEqual(["toast: Added"])
+  // `enter` runs through the new machine too.
+  expect(second).toEqual(["toast: Paying", "track: pay", "charge"])
 })

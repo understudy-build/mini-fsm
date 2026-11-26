@@ -7,7 +7,7 @@
   mini-fsm
 </h1>
 
-A finite state machine over TypeScript tagged unions, in 1.5 kB minified (0.8 kB gzipped). States and events are plain objects with a `_tag`; each handler sees only the state and event variants it handles, and each state lists the states it may move to.
+A finite state machine over TypeScript tagged unions, in 1.6 kB minified (0.85 kB gzipped). States and events are plain objects with a `_tag`; each handler sees only the state and event variants it handles, and each state lists the states it may move to.
 
 Adapters for React, Vue, Solid 2 and Svelte 5 live at subpaths. Node and Svelte stores need none.
 
@@ -69,7 +69,7 @@ export const searchMachine = machine<State, Event>()({
 
 ## Transitions
 
-Each state's `to` lists the other states it may move to. Staying in the same tag is always allowed, so `loading` handles a second `search` without listing itself, and a guard returns `state` to stay as it is. `to: []` marks a final state.
+Each state's `to` lists the other states it may move to. Staying in the same tag is always allowed, so `loading` handles a second `search` without listing itself, and a guard returns `state` to refuse the event. `to: []` marks a final state.
 
 The build fails when:
 
@@ -84,24 +84,41 @@ At runtime, `searchMachine.graph` holds the same map, `{ idle: ["loading"], load
 
 `transition(state, event)` is pure and returns a `Step`:
 
-| Step                         | When                                                                  |
-| ---------------------------- | --------------------------------------------------------------------- |
-| `{ _tag: "ignored" }`        | the state has no handler for the event                                |
-| `{ _tag: "stayed", state }`  | the handler kept the tag; the running effect keeps running            |
-| `{ _tag: "entered", state }` | the handler changed the tag, or the event is in the state's `reenter` |
+| Step                                  | When                                                                  |
+| ------------------------------------- | --------------------------------------------------------------------- |
+| `{ _tag: "ignored" }`                 | the state has no handler for the event                                |
+| `{ _tag: "refused", outputs }`        | a guard returned `state`, even for a `reenter` event                  |
+| `{ _tag: "stayed", state, outputs }`  | the handler kept the tag; the running effect keeps running            |
+| `{ _tag: "entered", state, outputs }` | the handler changed the tag, or the event is in the state's `reenter` |
 
-A guard that returns `state` gives `stayed` with the same object, so "no handler" and "the guard said no" stay apart.
+`stayed` always carries a new object, so "no handler", "the guard said no" and "the data changed" stay apart. `outputs` holds the side effects the handler queued with `after`, described under [Effects](#effects); `transition` never runs them.
 
-`accepts(state, event)` asks whether the event would change the state. It is `false` when the state has no handler for the event or a guard returns `state`, so a control can disable itself from the machine's own rules instead of repeating them:
+`can(state, event)` asks whether the event would change the state. It is `false` when the step is `ignored` or `refused`, so a control can disable itself from the machine's own rules instead of repeating them:
 
 ```tsx
 const pay = { _tag: "pay" } as const
 
 // Disabled in every state without a `pay` handler, and wherever its guard says no.
-<button disabled={!orderMachine.accepts(state, pay)} onClick={() => send(pay)}>
+<button disabled={!orderMachine.can(state, pay)} onClick={() => send(pay)}>
   Pay
 </button>
 ```
+
+`can` runs the handler and throws its outputs away, so it never triggers a side effect, and it throws `IllegalTransition` like `transition`. The adapters return a `can` bound to the current state.
+
+A disabled control never sends its event, so its guard never runs. When the user should learn why they can't do something, keep the control enabled and let the guard explain itself with an output:
+
+```ts
+pay: (state, _, after) => {
+  if (state.items.length === 0) {
+    after(() => toast("Your cart is empty"))
+    return state // refused: no new state, but the toast runs
+  }
+  return { _tag: "paying", items: state.items }
+},
+```
+
+Pick one per control: a `pay` button that `can` disables never shows this toast.
 
 A handler the compiler can't check, through a cast or plain JavaScript, can still return a state its `to` doesn't list. `transition` then throws `IllegalTransition`, with `from` and `to`.
 
@@ -138,7 +155,36 @@ uploading: {
 },
 ```
 
-Without `catch`, an error from `enter` surfaces as an unhandled rejection. It never throws out of `send`. An error from a listener or handler during the effect's `send`, such as a render bug, is reported as an uncaught error and never reaches `catch`, so it can't move the machine to a failure state.
+Without `catch`, an error from `enter` surfaces as an unhandled rejection. It never throws out of `send`. An error from a listener, handler or output during the effect's `send`, such as a render bug, is reported as an uncaught error and never reaches `catch`, so it can't move the machine to a failure state.
+
+### Side effects that run once per step
+
+`enter` runs every time the machine arrives in a state, including when an actor starts from a restored state, so it suits work that belongs to the state, such as a request. A side effect that belongs to one step, such as a toast, an analytics event or a focus change, goes through the handler's third argument, `after`:
+
+```ts
+const cartMachine = ({ toast, track }: Deps) =>
+  machine<Cart, CartEvent>()({
+    initial: { _tag: "cart", items: [] },
+    states: {
+      cart: {
+        to: ["paying"],
+        on: {
+          add: (state, event, after) => {
+            after(() => toast(`Added ${event.item}`))
+            return { ...state, items: [...state.items, event.item] }
+          },
+          pay: (state, _, after) => {
+            after(() => track("pay", { items: state.items.length }))
+            return { _tag: "paying", items: state.items }
+          },
+        },
+      },
+      // ...
+    },
+  })
+```
+
+`after` only queues the function. `transition` collects the queue into `step.outputs` and stays pure, so `verify` can explore every state and `can` can run during render without firing a toast. The actor runs the outputs once per `send`, in the order queued, after the listeners have seen the new state and before the new state's `enter` starts. They never run on restore, on subscribe, in `verify` or in `can`, and a step that throws `IllegalTransition` drops them. Calling `after` once its handler has returned throws.
 
 ## Frameworks
 
@@ -175,7 +221,14 @@ const Steps = <S extends Tagged, E extends Tagged>(props: {
 )
 ```
 
-`useMachine(machine, initial?)` reads `initial` once, like `useState`.
+`useMachine(machine, initial?)` returns `[state, send, can]` and reads `initial` once, like `useState`. Each step and each new effect runs through the latest `machine`, so a factory machine that `useMemo` rebuilds when a dependency changes keeps its state and uses the new dependency from the next step on. An effect that is already running keeps the closure it started with.
+
+```tsx
+const cart = useMemo(() => cartMachine({ toast, track }), [toast, track])
+const [state, send, can] = useMachine(cart)
+
+<button disabled={!can({ _tag: "pay" })} onClick={() => send({ _tag: "pay" })}>Pay</button>
+```
 
 ### Vue
 
@@ -194,7 +247,7 @@ const [state, send] = useMachine(searchMachine)
 </template>
 ```
 
-`state` is a `ShallowRef`. Effects start on mount.
+`useMachine` returns `[state, send, can]`. `state` is a `ShallowRef`, and `can` reads `state.value`, so a template or `computed` that calls it updates with the machine. Effects start on mount.
 
 ### Solid
 
@@ -202,8 +255,8 @@ const [state, send] = useMachine(searchMachine)
 import { createMachine } from "@understudy-build/mini-fsm/solid"
 
 const Search = () => {
-  const [state, send] = createMachine(searchMachine)
-  // state() is an accessor
+  const [state, send, can] = createMachine(searchMachine)
+  // state() is an accessor; can(event) reads it, so it tracks too
 }
 ```
 
@@ -224,7 +277,7 @@ Needs Solid 2. Effects start once the component settles.
 {/if}
 ```
 
-Needs Svelte 5.7. Read `search.state`; destructuring it copies one value and loses reactivity. Effects run while a template or `$effect` reads `state`. With stores, use `actor(searchMachine)` and `$search`.
+Needs Svelte 5.7. Read `search.state`; destructuring it copies one value and loses reactivity. `search.can(event)` tracks the machine like `state` does. Effects run while a template or `$effect` reads `state` or calls `can`. With stores, use `actor(searchMachine)` and `$search`.
 
 ### Node
 
@@ -242,8 +295,8 @@ For a workflow you save to a database, skip the actor and call `transition`. It 
 
 ```ts
 const step = orderMachine.transition(row.state, event)
-if (step._tag === "ignored")
-  return Result.fail(new Ignored({ state: row.state._tag, event: event._tag }))
+if (step._tag === "ignored" || step._tag === "refused")
+  return Result.fail(new Rejected({ step: step._tag, state: row.state._tag, event: event._tag }))
 
 await db.transaction(async (tx) => {
   const saved = await tx
@@ -260,12 +313,13 @@ A runtime with one writer per key, such as Restate virtual objects, Effect Clust
 ## How it runs
 
 - `send` with an event the current state doesn't handle does nothing, and listeners don't run. Use `transition` when you need to know.
-- A handler that leaves the graph throws `IllegalTransition` out of `send` and `transition`, and the state stays as it was.
-- A step aborts the old effect, commits the state, runs the listeners, then starts the new effect. Listeners see each state before its effect can move on, and a throwing listener can't stop the effect from starting.
+- A refused step runs its outputs, but commits nothing, notifies no listener and leaves the effect running.
+- A handler that leaves the graph throws `IllegalTransition` out of `send` and `transition`, the state stays as it was, and its outputs never run.
+- A step aborts the old effect, commits the state, runs the listeners, runs the outputs in the order queued, then starts the new effect. Listeners see each state before its effect can move on. The first listener or output that throws stops the ones left and comes out of `send`, but the effect still starts.
 - After `signal` aborts, `send` and errors from that effect are dropped, so a late response or an `AbortError` can't land.
 - Effects run only while someone subscribes. A new subscriber sees the current state first; the first subscriber then starts its effect, and the last unsubscribe aborts it. An actor nobody subscribes to does nothing, which keeps React StrictMode and server rendering free of side effects.
-- A `send` from inside an effect or a listener waits until the current step finishes, so listeners see every state in order.
-- An error from `enter`, thrown or rejected, goes to the state's `catch`, or else surfaces as an unhandled rejection. A listener or handler that throws inside an effect's `send` is reported on a microtask instead, so it can't reach `catch`.
+- A `send` from inside an effect, a listener or an output waits until the current step finishes, its `enter` included, so listeners see every state in order.
+- An error from `enter`, thrown or rejected, goes to the state's `catch`, or else surfaces as an unhandled rejection. A listener, handler or output that throws inside an effect's `send` is reported on a microtask instead, so it can't reach `catch`.
 
 There is no context, nesting or parallel states. Data lives on the state variant.
 
@@ -288,22 +342,23 @@ const report = verify(jobMachine, {
 | `{ _tag: "partial", states, depth }`             | nothing broke, but the search hit `depth` (12) with states left; raise it  |
 | `{ _tag: "broken", invariant, initial, trace }`  | `trace` is the shortest list of `{ event, state }` that breaks `invariant` |
 
-`verified` holds for the events you pass: a rule that depends on a payload is only tried with the payloads you list. `unreached` lists the states none of them reach: a dead state, or a missing sample event. `stuck` lists the reached states that name a way out in `to` but that every sample event leaves as they are, such as a `pending` state with no handler for `confirm`. States are compared as JSON with sorted keys unless you pass `key`. `verify` covers one machine; races between several actors or a database need a model of the whole system, in TLA+ or Quint.
+`verified` holds for the events you pass: a rule that depends on a payload is only tried with the payloads you list. `unreached` lists the states none of them reach: a dead state, or a missing sample event. `stuck` lists the reached states that name a way out in `to` but that every sample event leaves as they are, such as a `pending` state with no handler for `confirm`. An ignored event, a refused one, and a new object with the same content all leave a state as it is. States are compared as JSON with sorted keys unless you pass `key`. `verify` covers one machine; races between several actors or a database need a model of the whole system, in TLA+ or Quint.
 
 ## API
 
-| Export                               | Signature                                                                                          |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------- |
-| `machine<State, Event>()(def)`       | `{ initial, graph, transition(state, event) => Step, accepts(state, event), enter(state, scope) }` |
-| `actor(machine, initial?)`           | `{ get(), send(event), subscribe(listener) }`, a Svelte store                                      |
-| `IllegalTransition`                  | `Error` with `_tag`, `from` and `to`                                                               |
-| `/verify` `verify(machine, options)` | `{ _tag: "verified" \| "partial" \| "broken", ... }`                                               |
-| `/react` `useMachine`                | `[state, send]`                                                                                    |
-| `/vue` `useMachine`                  | `[ShallowRef<state>, send]`                                                                        |
-| `/solid` `createMachine`             | `[() => state, send]`                                                                              |
-| `/svelte` `createMachine`            | `{ state, send }`                                                                                  |
+| Export                               | Signature                                                                                      |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| `machine<State, Event>()(def)`       | `{ initial, graph, transition(state, event) => Step, can(state, event), enter(state, scope) }` |
+| handler                              | `(state, event, after) => state`; `after(run)` queues `run` for once the step commits          |
+| `actor(machine, initial?)`           | `{ get(), send(event), can(event), subscribe(listener) }`, a Svelte store                      |
+| `IllegalTransition`                  | `Error` with `_tag`, `from` and `to`                                                           |
+| `/verify` `verify(machine, options)` | `{ _tag: "verified" \| "partial" \| "broken", ... }`                                           |
+| `/react` `useMachine`                | `[state, send, can]`                                                                           |
+| `/vue` `useMachine`                  | `[ShallowRef<state>, send, can]`                                                               |
+| `/solid` `createMachine`             | `[() => state, send, can]`                                                                     |
+| `/svelte` `createMachine`            | `{ state, send, can }`                                                                         |
 
-Each adapter adds 40 to 80 bytes minified on top of `actor`. `/verify` is 1.2 kB minified and stays out of bundles that don't import it.
+Each adapter adds 170 to 310 bytes minified on top of `actor`, React the most because it forwards each step to the latest machine. `/verify` is 1.2 kB minified and stays out of bundles that don't import it.
 
 ## Licence
 
