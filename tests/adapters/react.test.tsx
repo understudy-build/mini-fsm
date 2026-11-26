@@ -1,16 +1,22 @@
 // @vitest-environment happy-dom
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { StrictMode, useMemo } from "react"
+import { hydrateRoot } from "react-dom/client"
+import { renderToString } from "react-dom/server"
 import { afterEach, expect, test, vi } from "vitest"
 
 import { useMachine } from "../../src/adapters/react.ts"
+import { createPersister, type Persist } from "../../src/persist.ts"
 import { searchMachine, type State } from "../search.ts"
-import { shop } from "../shop.ts"
+import { CartZod, shop } from "../shop.ts"
 import { fakeFetch } from "../utils.ts"
 
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+  localStorage.clear()
+  document.body.innerHTML = ""
 })
 
 const Search = ({ initial }: { initial?: State }) => {
@@ -111,4 +117,33 @@ test("a machine rebuilt by `useMemo` keeps the state and runs the next step thro
   expect(first).toEqual(["toast: Added"])
   // `enter` runs through the new machine too.
   expect(second).toEqual(["toast: Paying", "track: pay", "charge"])
+})
+
+const cart = shop(() => {})
+
+const Cart = ({ persist }: { persist: Persist }) => {
+  const [state] = useMachine(cart, persist("cart", CartZod))
+  return <p>{state._tag === "paid" ? "Paid" : `${state._tag}: ${state.items} items`}</p>
+}
+
+test("hydrates what the server rendered, then shows the saved state", async () => {
+  localStorage.setItem("cart", JSON.stringify({ version: 0, state: { _tag: "cart", items: 2 } }))
+  const container = document.createElement("div")
+  // The server has no storage.
+  container.innerHTML = renderToString(<Cart persist={createPersister(undefined)} />)
+  document.body.append(container)
+  expect(container.textContent).toBe("cart: 0 items")
+  const recovered: Array<unknown> = []
+  const logged = vi.spyOn(console, "error")
+
+  const root = await act(async () =>
+    hydrateRoot(container, <Cart persist={createPersister(localStorage)} />, {
+      onRecoverableError: (error) => recovered.push(error),
+    }),
+  )
+
+  expect(screen.getByText("cart: 2 items")).toBeTruthy()
+  expect(recovered).toEqual([])
+  expect(logged).not.toHaveBeenCalled()
+  root.unmount()
 })
