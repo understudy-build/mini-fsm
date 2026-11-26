@@ -270,15 +270,15 @@ test("a listener that throws during an effect's send is reported, not turned int
   expect(reported[0]).toThrow(render)
 })
 
-test("accepts an event that moves the machine or updates its state", () => {
-  expect(searchMachine.accepts({ _tag: "idle" }, { _tag: "search", query: "ts" })).toBe(true)
+test("can take an event that moves the machine or updates its state", () => {
+  expect(searchMachine.can({ _tag: "idle" }, { _tag: "search", query: "ts" })).toBe(true)
   // Same tag, new value: a second search while one is loading.
-  expect(
-    searchMachine.accepts({ _tag: "loading", query: "t" }, { _tag: "search", query: "ts" }),
-  ).toBe(true)
+  expect(searchMachine.can({ _tag: "loading", query: "t" }, { _tag: "search", query: "ts" })).toBe(
+    true,
+  )
 })
 
-test("does not accept an event the state ignores or a guard refuses", () => {
+test("cannot take an event the state ignores or a guard refuses", () => {
   type Door = { _tag: "closed"; locked: boolean } | { _tag: "open" }
   const door = machine<Door, { _tag: "push" } | { _tag: "lock" }>()({
     initial: { _tag: "closed", locked: true },
@@ -288,7 +288,36 @@ test("does not accept an event the state ignores or a guard refuses", () => {
     },
   })
 
-  expect(door.accepts({ _tag: "closed", locked: false }, { _tag: "lock" })).toBe(false)
-  expect(door.accepts({ _tag: "closed", locked: true }, { _tag: "push" })).toBe(false)
-  expect(door.accepts({ _tag: "closed", locked: false }, { _tag: "push" })).toBe(true)
+  expect(door.can({ _tag: "closed", locked: false }, { _tag: "lock" })).toBe(false)
+  expect(door.can({ _tag: "closed", locked: true }, { _tag: "push" })).toBe(false)
+  expect(door.can({ _tag: "closed", locked: false }, { _tag: "push" })).toBe(true)
+
+  const running = actor(door)
+  expect(running.can({ _tag: "push" })).toBe(false)
+})
+
+test("a guard that returns `state` refuses, even for a `reenter` event", () => {
+  type Dial = { _tag: "on"; level: number }
+  const dial = machine<Dial, { _tag: "turn"; level: number }>()({
+    initial: { _tag: "on", level: 1 },
+    states: {
+      on: {
+        to: [],
+        on: {
+          turn: (state, event) => (event.level > 3 ? state : { ...state, level: event.level }),
+        },
+        reenter: ["turn"],
+      },
+    },
+  })
+
+  expect(dial.transition(dial.initial, { _tag: "turn", level: 5 })).toEqual({
+    _tag: "refused",
+    outputs: [],
+  })
+  expect(dial.transition(dial.initial, { _tag: "turn", level: 2 })).toEqual({
+    _tag: "entered",
+    state: { _tag: "on", level: 2 },
+    outputs: [],
+  })
 })
