@@ -69,6 +69,7 @@
   "devDependencies": {
     "@changesets/changelog-github": "1.0.1",
     "@changesets/cli": "3.0.3",
+    "@solidjs/web": "^2.0.4",
     "@sveltejs/vite-plugin-svelte": "7.3.1",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",
@@ -83,7 +84,7 @@
     "oxlint-tsgolint": "^7.0.2008",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "solid-js": "^2.0.3",
+    "solid-js": "^2.0.4",
     "svelte": "5.57.3",
     "tsdown": "^0.23.7",
     "tsrs": "0.25.0-ts7.1.0-beta",
@@ -93,12 +94,16 @@
     "zod": "^4.6.7"
   },
   "peerDependencies": {
+    "@solidjs/web": ">=2",
     "react": ">=18",
     "solid-js": ">=2",
     "svelte": ">=5.7",
     "vue": ">=3.3"
   },
   "peerDependenciesMeta": {
+    "@solidjs/web": {
+      "optional": true
+    },
     "react": {
       "optional": true
     },

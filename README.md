@@ -260,7 +260,7 @@ const Search = () => {
 }
 ```
 
-Needs Solid 2. Effects start once the component settles.
+Needs Solid 2 and `@solidjs/web`. Effects start once the component settles.
 
 ### Svelte
 
@@ -320,7 +320,8 @@ A runtime with one writer per key, such as Restate virtual objects, Effect Clust
 ```ts
 import { createPersister } from "@understudy-build/mini-fsm/persist"
 
-const persist = createPersister(typeof localStorage === "undefined" ? undefined : localStorage, {
+// Node 25 has a `localStorage` that every request would share, so check for `window`.
+const persist = createPersister(typeof window === "undefined" ? undefined : localStorage, {
   version: 1,
   discard: (key, reason) => console.warn(`Dropped the saved ${key}: ${reason._tag}`),
 })
@@ -355,7 +356,9 @@ const CartSchema = Schema.toStandardSchemaV1(
 
 A persister's slot loads what the schema decodes and saves any state, so a schema that covers part of `State` passes to `actor` and the adapters without a cast. `paid` is still saved; the next load rejects it, reports `invalid` and starts from `initial`. A schema that decodes a state the machine doesn't have fails the build.
 
-The schema must be synchronous: `load` throws an error naming the key when `validate` returns a Promise. A `validate` that throws is a bug and comes out of `load`. States must survive `JSON.stringify`, so keep `Date`, `Map` and class instances out of them. Without storage, as on the server, a slot loads nothing and saves nothing. A `save` that throws, such as `localStorage` over its quota, comes out of `send` like a listener error: the state stays committed and `enter` still starts.
+The schema must be synchronous: `load` throws an error naming the key when `validate` returns a Promise. A `validate` that throws is a bug and comes out of `load`. States must survive `JSON.stringify`, so keep `Date`, `Map` and class instances out of them. The schema decodes what `JSON.stringify` wrote, so its encoded form must be the state itself: a schema that parses numbers from strings, such as Effect's `Schema.NumberFromString`, never restores. Without storage, as on the server, a slot loads nothing and saves nothing.
+
+A write that fails, such as `localStorage` over its quota, never comes out of `send`: the step goes on and the view keeps up. The slot removes the key, so the next visit starts fresh instead of resuming an older state, and `discard` hears `save` with the error. A hand-built slot whose `save` throws follows the listener rule instead: the error comes out of `send`, the listeners and outputs left don't run, and `enter` still starts.
 
 ### What runs on restore
 
@@ -415,16 +418,16 @@ The actor doesn't await `save`, so handle its rejection in the slot; otherwise i
 
 ### Server rendering
 
-The server has no storage, so it renders the state before loading: `from` when it's a state, otherwise `machine.initial`. The client loads the saved state, and each adapter handles the difference while it hydrates:
+The server renders the state before loading, `from` when it's a state and `machine.initial` otherwise, even when its slot has data, such as a cookie slot or Node's own `localStorage`. React, Vue and Solid render that state while hydrating too, so hydration matches the server, then move to the saved state:
 
-| Adapter | While hydrating                                                                                    |
-| ------- | -------------------------------------------------------------------------------------------------- |
-| React   | `getServerSnapshot` returns the state before loading; React then renders again with the saved one  |
-| Vue     | `state` is the state before loading, and moves to the saved one on mount                           |
-| Solid   | `state` is the state before loading while `isHydrating()`, and moves to the saved one once settled |
-| Svelte  | renders the saved state and repairs the server's text and attributes where they differ             |
+| Adapter | On the server and while hydrating                                                               |
+| ------- | ----------------------------------------------------------------------------------------------- |
+| React   | `getServerSnapshot` returns the state before loading; React then renders with the saved one     |
+| Vue     | `state` is the state before loading, and moves to the saved one on mount                        |
+| Solid   | `state` is the state before loading under `isServer` or `isHydrating()`, until it settles       |
+| Svelte  | renders what the slot loads; the client repairs the server's text and attributes if they differ |
 
-Svelte has no public way to tell hydration apart, so its adapter can't render the server's state first. Svelte keeps the server's nodes and patches them in place. A page that renders without hydrating shows the saved state from its first render in every adapter.
+Svelte has no public way to tell the server or hydration apart, so its adapter renders what the slot loads on both sides. With no storage on the server, Svelte keeps the server's nodes and patches them in place. A page that renders without hydrating shows the saved state from its first render in every adapter.
 
 ## How it runs
 
@@ -477,7 +480,7 @@ const report = verify(jobMachine, {
 | `/solid` `createMachine(machine, from?)`        | `[() => state, send, can]`                                                                               |
 | `/svelte` `createMachine(machine, from?)`       | `{ state, send, can }`                                                                                   |
 
-Each adapter adds 240 to 430 bytes minified on top of `actor`, React the most because it forwards each step to the latest machine. `/persist` is 0.5 kB minified and `/verify` 1.2 kB; each stays out of bundles that don't import it, and `/persist` has no runtime dependency.
+Each adapter adds 240 to 430 bytes minified on top of `actor`, React the most because it forwards each step to the latest machine. `/persist` is 0.6 kB minified and `/verify` 1.2 kB; each stays out of bundles that don't import it, and `/persist` has no runtime dependency.
 
 ## Licence
 

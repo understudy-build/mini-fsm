@@ -126,11 +126,11 @@ const Cart = ({ persist }: { persist: Persist }) => {
   return <p>{state._tag === "paid" ? "Paid" : `${state._tag}: ${state.items} items`}</p>
 }
 
-test("hydrates what the server rendered, then shows the saved state", async () => {
+test("the server renders the state before loading, and hydration then shows the saved state", async () => {
   localStorage.setItem("cart", JSON.stringify({ version: 0, state: { _tag: "cart", items: 2 } }))
   const container = document.createElement("div")
-  // The server has no storage.
-  container.innerHTML = renderToString(<Cart persist={createPersister(undefined)} />)
+  // The server's slot has data too, like a cookie slot or Node's own `localStorage`.
+  container.innerHTML = renderToString(<Cart persist={createPersister(localStorage)} />)
   document.body.append(container)
   expect(container.textContent).toBe("cart: 0 items")
   const recovered: Array<unknown> = []
