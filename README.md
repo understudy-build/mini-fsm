@@ -7,9 +7,9 @@
   mini-fsm
 </h1>
 
-A finite state machine over TypeScript tagged unions, in 1.6 kB minified (0.85 kB gzipped). States and events are plain objects with a `_tag`; each handler sees only the state and event variants it handles, and each state lists the states it may move to.
+A finite state machine over TypeScript tagged unions, in 1.7 kB minified (0.89 kB gzipped). States and events are plain objects with a `_tag`; each handler sees only the state and event variants it handles, and each state lists the states it may move to.
 
-Adapters for React, Vue, Solid 2 and Svelte 5 live at subpaths. Node and Svelte stores need none.
+Adapters for React, Vue, Solid 2 and Svelte 5 live at subpaths. Node and Svelte stores need none. `/persist` saves an actor's state to `localStorage` and decodes it on reload with any Standard Schema.
 
 ## Quick start
 
@@ -221,7 +221,7 @@ const Steps = <S extends Tagged, E extends Tagged>(props: {
 )
 ```
 
-`useMachine(machine, initial?)` returns `[state, send, can]` and reads `initial` once, like `useState`. Each step and each new effect runs through the latest `machine`, so a factory machine that `useMemo` rebuilds when a dependency changes keeps its state and uses the new dependency from the next step on. An effect that is already running keeps the closure it started with.
+`useMachine(machine, from?)` returns `[state, send, can]` and reads `from`, a state or a [slot](#persisting-state), once, like `useState`. Each step and each new effect runs through the latest `machine`, so a factory machine that `useMemo` rebuilds when a dependency changes keeps its state and uses the new dependency from the next step on. An effect that is already running keeps the closure it started with.
 
 ```tsx
 const cart = useMemo(() => cartMachine({ toast, track }), [toast, track])
@@ -260,7 +260,7 @@ const Search = () => {
 }
 ```
 
-Needs Solid 2. Effects start once the component settles.
+Needs Solid 2 and `@solidjs/web`. Effects start once the component settles.
 
 ### Svelte
 
@@ -306,16 +306,136 @@ await db.transaction(async (tx) => {
   if (saved.rowCount === 0) throw new Conflict() // reload and retry
   if (step._tag === "entered") await tx.insert(outbox).values({ orderId: id, state: step.state })
 })
+for (const run of step.outputs) run()
 ```
 
+Run `step.outputs` once the transaction commits, so a conflict that rolls the step back sends no email.
+
 A runtime with one writer per key, such as Restate virtual objects, Effect Cluster entities or Durable Objects, makes the version check unnecessary.
+
+## Persisting state
+
+`actor(machine, from)` takes a state or a slot, `{ load, save }`, and so do the adapters. The actor loads the slot once, when it is created, and saves each new state inside the step, whether or not anyone subscribes. `/persist` builds slots over Web Storage:
+
+```ts
+import { createPersister } from "@understudy-build/mini-fsm/persist"
+
+// Node 25 has a `localStorage` that every request would share, so check for `window`.
+const persist = createPersister(typeof window === "undefined" ? undefined : localStorage, {
+  version: 1,
+  discard: (key, reason) => console.warn(`Dropped the saved ${key}: ${reason._tag}`),
+})
+
+const cart = actor(cartMachine, persist("cart", CartSchema))
+```
+
+Each key holds `{ version, state }` as JSON. Saved data is untrusted input, so the slot decodes `state` with the key's schema before it reaches `transition`. It throws the data away when it isn't JSON (`json`), when another `version` wrote it or it has no envelope (`version`, with the one `found`), or when the schema rejects it (`invalid`, with the schema's `issues`). The actor then starts from `machine.initial`, and `discard` hears why. A missing key starts from `initial` too, without calling `discard`. Bump `version` when old data would decode into the wrong thing; there is no migration step.
+
+The schema is any [Standard Schema](https://standardschema.dev): Zod, Valibot, ArkType, or Effect Schema through `Schema.toStandardSchemaV1`. It also decides what a reload may resume. Leave a final state out and the next visit starts fresh:
+
+```ts
+import { z } from "zod"
+
+// `paid` is left out: a finished order starts a new cart.
+const CartSchema = z.discriminatedUnion("_tag", [
+  z.object({ _tag: z.literal("cart"), items: z.array(z.string()) }),
+  z.object({ _tag: z.literal("paying"), items: z.array(z.string()), attempt: z.string() }),
+])
+```
+
+```ts
+import { Schema } from "effect"
+
+const CartSchema = Schema.toStandardSchemaV1(
+  Schema.Union([
+    Schema.TaggedStruct("cart", { items: Schema.Array(Schema.String) }),
+    Schema.TaggedStruct("paying", { items: Schema.Array(Schema.String), attempt: Schema.String }),
+  ]),
+)
+```
+
+A persister's slot loads what the schema decodes and saves any state, so a schema that covers part of `State` passes to `actor` and the adapters without a cast. `paid` is still saved; the next load rejects it, reports `invalid` and starts from `initial`. A schema that decodes a state the machine doesn't have fails the build.
+
+The schema must be synchronous: `load` throws an error naming the key when `validate` returns a Promise. A `validate` that throws is a bug and comes out of `load`. States must survive `JSON.stringify`, so keep `Date`, `Map` and class instances out of them. The schema decodes what `JSON.stringify` wrote, so its encoded form must be the state itself: a schema that parses numbers from strings, such as Effect's `Schema.NumberFromString`, never restores. Without storage, as on the server, a slot loads nothing and saves nothing.
+
+A write that fails, such as `localStorage` over its quota, never comes out of `send`: the step goes on and the view keeps up. The slot removes the key, so the next visit starts fresh instead of resuming an older state, and `discard` hears `save` with the error. A hand-built slot whose `save` throws follows the listener rule instead: the error comes out of `send`, the listeners and outputs left don't run, and `enter` still starts.
+
+### What runs on restore
+
+Restoring runs no handler, so no `after` function runs: the `track("pay")` call from the step that reached `paying` doesn't fire again. `enter` does run again, on the first subscribe, as it does for any actor created from a given state. A restored `paying` state starts its charge again, so carry an idempotency key in the state and send it with the request. Make the key where the event is sent, so `transition` stays pure:
+
+```ts
+// In the view: send({ _tag: "pay", attempt: crypto.randomUUID() })
+pay: (state, event) => ({ _tag: "paying", items: state.items, attempt: event.attempt }),
+
+paying: {
+  to: ["paid"],
+  on: { confirm: () => ({ _tag: "paid" }) },
+  enter: async (state, { send, signal }) => {
+    // The server charges once per key, however many times this runs.
+    await fetch("/charge", { method: "POST", headers: { "Idempotency-Key": state.attempt }, signal })
+    send({ _tag: "confirm" })
+  },
+},
+```
+
+### One actor per key
+
+Two actors on one key each save their own state, and the last write wins. The actor doesn't follow writes from elsewhere, such as another tab. Create one actor per key and share what it returns; in React, through context:
+
+```tsx
+const slot = persist("cart", CartSchema)
+const CartContext = createContext<ReturnType<typeof useMachine<Cart, CartEvent>> | null>(null)
+
+export const CartProvider = ({ children }: { children: ReactNode }) => {
+  const cart = useMachine(cartMachine, slot)
+  return <CartContext value={cart}>{children}</CartContext>
+}
+
+export const useCart = () => {
+  const cart = use(CartContext)
+  if (!cart) throw new Error("useCart needs a CartProvider")
+  return cart
+}
+```
+
+### Async backends
+
+`load` is synchronous, because an actor needs its first state when it is created. For IndexedDB, a server or React Native's AsyncStorage, read before rendering, then hand the actor a slot you build:
+
+```ts
+import type { Slot } from "@understudy-build/mini-fsm"
+import { get, set } from "idb-keyval"
+
+const saved = CartSchema.safeParse(await get("cart"))
+const slot: Slot<Cart> = {
+  load: () => (saved.success ? saved.data : undefined),
+  save: (state) => void set("cart", state).catch(report),
+}
+```
+
+The actor doesn't await `save`, so handle its rejection in the slot; otherwise it goes unhandled.
+
+### Server rendering
+
+The server renders the state before loading, `from` when it's a state and `machine.initial` otherwise, even when its slot has data, such as a cookie slot or Node's own `localStorage`. React, Vue and Solid render that state while hydrating too, so hydration matches the server, then move to the saved state:
+
+| Adapter | On the server and while hydrating                                                               |
+| ------- | ----------------------------------------------------------------------------------------------- |
+| React   | `getServerSnapshot` returns the state before loading; React then renders with the saved one     |
+| Vue     | `state` is the state before loading, and moves to the saved one on mount                        |
+| Solid   | `state` is the state before loading under `isServer` or `isHydrating()`, until it settles       |
+| Svelte  | renders what the slot loads; the client repairs the server's text and attributes if they differ |
+
+Svelte has no public way to tell the server or hydration apart, so its adapter renders what the slot loads on both sides. With no storage on the server, Svelte keeps the server's nodes and patches them in place. A page that renders without hydrating shows the saved state from its first render in every adapter.
 
 ## How it runs
 
 - `send` with an event the current state doesn't handle does nothing, and listeners don't run. Use `transition` when you need to know.
 - A refused step runs its outputs, but commits nothing, notifies no listener and leaves the effect running.
 - A handler that leaves the graph throws `IllegalTransition` out of `send` and `transition`, the state stays as it was, and its outputs never run.
-- A step aborts the old effect, commits the state, runs the listeners, runs the outputs in the order queued, then starts the new effect. Listeners see each state before its effect can move on. The first listener or output that throws stops the ones left and comes out of `send`, but the effect still starts.
+- An actor created from a slot loads it once and runs no handler, so no output runs on restore.
+- A step aborts the old effect, commits the state, saves it to the slot, runs the listeners, runs the outputs in the order queued, then starts the new effect. Listeners see each state before its effect can move on. The first `save`, listener or output that throws stops the ones left and comes out of `send`, but the effect still starts. `ignored` and `refused` steps save nothing.
 - After `signal` aborts, `send` and errors from that effect are dropped, so a late response or an `AbortError` can't land.
 - Effects run only while someone subscribes. A new subscriber sees the current state first; the first subscriber then starts its effect, and the last unsubscribe aborts it. An actor nobody subscribes to does nothing, which keeps React StrictMode and server rendering free of side effects.
 - A `send` from inside an effect, a listener or an output waits until the current step finishes, its `enter` included, so listeners see every state in order.
@@ -346,19 +466,21 @@ const report = verify(jobMachine, {
 
 ## API
 
-| Export                               | Signature                                                                                      |
-| ------------------------------------ | ---------------------------------------------------------------------------------------------- |
-| `machine<State, Event>()(def)`       | `{ initial, graph, transition(state, event) => Step, can(state, event), enter(state, scope) }` |
-| handler                              | `(state, event, after) => state`; `after(run)` queues `run` for once the step commits          |
-| `actor(machine, initial?)`           | `{ get(), send(event), can(event), subscribe(listener) }`, a Svelte store                      |
-| `IllegalTransition`                  | `Error` with `_tag`, `from` and `to`                                                           |
-| `/verify` `verify(machine, options)` | `{ _tag: "verified" \| "partial" \| "broken", ... }`                                           |
-| `/react` `useMachine`                | `[state, send, can]`                                                                           |
-| `/vue` `useMachine`                  | `[ShallowRef<state>, send, can]`                                                               |
-| `/solid` `createMachine`             | `[() => state, send, can]`                                                                     |
-| `/svelte` `createMachine`            | `{ state, send, can }`                                                                         |
+| Export                                          | Signature                                                                                                |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `machine<State, Event>()(def)`                  | `{ initial, graph, transition(state, event) => Step, can(state, event), enter(state, scope) }`           |
+| handler                                         | `(state, event, after) => state`; `after(run)` queues `run` for once the step commits                    |
+| `actor(machine, from?)`                         | `{ get(), send(event), can(event), subscribe(listener) }`, a Svelte store; `from` is a state or a `Slot` |
+| `Slot<State>`                                   | `{ load() => State \| undefined, save(state) }`                                                          |
+| `IllegalTransition`                             | `Error` with `_tag`, `from` and `to`                                                                     |
+| `/persist` `createPersister(storage, options?)` | `(key, schema) => Slot`; options `version` (`0`) and `discard(key, reason)`                              |
+| `/verify` `verify(machine, options)`            | `{ _tag: "verified" \| "partial" \| "broken", ... }`                                                     |
+| `/react` `useMachine(machine, from?)`           | `[state, send, can]`                                                                                     |
+| `/vue` `useMachine(machine, from?)`             | `[ShallowRef<state>, send, can]`                                                                         |
+| `/solid` `createMachine(machine, from?)`        | `[() => state, send, can]`                                                                               |
+| `/svelte` `createMachine(machine, from?)`       | `{ state, send, can }`                                                                                   |
 
-Each adapter adds 170 to 310 bytes minified on top of `actor`, React the most because it forwards each step to the latest machine. `/verify` is 1.2 kB minified and stays out of bundles that don't import it.
+Each adapter adds 240 to 430 bytes minified on top of `actor`, React the most because it forwards each step to the latest machine. `/persist` is 0.6 kB minified and `/verify` 1.2 kB; each stays out of bundles that don't import it, and `/persist` has no runtime dependency.
 
 ## Licence
 

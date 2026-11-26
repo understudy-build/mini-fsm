@@ -2,15 +2,19 @@
 import { fireEvent, screen } from "@testing-library/dom"
 import { flushPromises, mount } from "@vue/test-utils"
 import { afterEach, expect, test, vi } from "vitest"
-import { defineComponent, h } from "vue"
+import { createSSRApp, defineComponent, h } from "vue"
+import { renderToString } from "vue/server-renderer"
 
 import { useMachine } from "../../src/adapters/vue.ts"
+import { createPersister, type Persist } from "../../src/persist.ts"
 import { searchMachine } from "../search.ts"
-import { shop } from "../shop.ts"
+import { CartZod, shop } from "../shop.ts"
 import { fakeFetch } from "../utils.ts"
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+  localStorage.clear()
   document.body.innerHTML = ""
 })
 
@@ -75,4 +79,45 @@ test("a control follows what the machine can take", async () => {
   await flushPromises()
 
   expect(pay).toHaveProperty("disabled", false)
+})
+
+const cart = shop(() => {})
+
+const Cart = (persist: Persist) =>
+  defineComponent(() => {
+    const [state] = useMachine(cart, persist("cart", CartZod))
+    return () =>
+      h(
+        "p",
+        state.value._tag === "paid" ? "Paid" : `${state.value._tag}: ${state.value.items} items`,
+      )
+  })
+
+test("the server renders the state before loading, and hydration then shows the saved state", async () => {
+  localStorage.setItem("cart", JSON.stringify({ version: 0, state: { _tag: "cart", items: 2 } }))
+  const container = document.createElement("div")
+  // The server's slot has data too, like a cookie slot or Node's own `localStorage`.
+  container.innerHTML = await renderToString(createSSRApp(Cart(createPersister(localStorage))))
+  document.body.append(container)
+  expect(container.textContent).toBe("cart: 0 items")
+  const logged = vi.spyOn(console, "error")
+  const warned = vi.spyOn(console, "warn")
+
+  const app = createSSRApp(Cart(createPersister(localStorage)))
+  app.mount(container)
+  await flushPromises()
+
+  expect(screen.getByText("cart: 2 items")).toBeTruthy()
+  expect(logged).not.toHaveBeenCalled()
+  expect(warned).not.toHaveBeenCalled()
+  app.unmount()
+})
+
+test("a client-only mount renders the saved state from the first render", () => {
+  localStorage.setItem("cart", JSON.stringify({ version: 0, state: { _tag: "cart", items: 2 } }))
+
+  // No flush: the first render already has it.
+  const wrapper = mount(Cart(createPersister(localStorage)))
+
+  expect(wrapper.text()).toBe("cart: 2 items")
 })

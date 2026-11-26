@@ -1,15 +1,18 @@
 // @vitest-environment happy-dom
 import { fireEvent, screen } from "@testing-library/dom"
+import * as solid from "solid-js"
 import { createRenderEffect, createRoot, flush } from "solid-js"
 import { afterEach, expect, test, vi } from "vitest"
 
 import { createMachine } from "../../src/adapters/solid.ts"
+import { createPersister } from "../../src/persist.ts"
 import { searchMachine } from "../search.ts"
-import { shop } from "../shop.ts"
+import { CartZod, shop } from "../shop.ts"
 import { fakeFetch } from "../utils.ts"
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  localStorage.clear()
   document.body.innerHTML = ""
 })
 
@@ -70,5 +73,44 @@ test("a control follows what the machine can take", () => {
   flush()
 
   expect(pay).toHaveProperty("disabled", false)
+  root.dispose()
+})
+
+// Hydrating for real needs `@solidjs/web` and an SSR JSX build. `hydrate()` sets this flag while it
+// claims the server's DOM, and `isHydrating()` reads it.
+const { sharedConfig } = solid as unknown as { sharedConfig: { hydrating: boolean } }
+
+test("while hydrating, `state` is the state the server rendered, and moves to the saved one once settled", () => {
+  localStorage.setItem("cart", JSON.stringify({ version: 0, state: { _tag: "cart", items: 2 } }))
+  const persist = createPersister(localStorage)
+  sharedConfig.hydrating = true
+  const root = createRoot((dispose) => {
+    const [state] = createMachine(
+      shop(() => {}),
+      persist("cart", CartZod),
+    )
+    return { state, dispose }
+  })
+  sharedConfig.hydrating = false
+
+  expect(root.state()).toEqual({ _tag: "cart", items: 0 })
+  flush()
+  expect(root.state()).toEqual({ _tag: "cart", items: 2 })
+  root.dispose()
+})
+
+test("a client-only render has the saved state from the start", () => {
+  localStorage.setItem("cart", JSON.stringify({ version: 0, state: { _tag: "cart", items: 2 } }))
+  const persist = createPersister(localStorage)
+
+  const root = createRoot((dispose) => {
+    const [state] = createMachine(
+      shop(() => {}),
+      persist("cart", CartZod),
+    )
+    return { state, dispose }
+  })
+
+  expect(root.state()).toEqual({ _tag: "cart", items: 2 })
   root.dispose()
 })

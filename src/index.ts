@@ -81,6 +81,16 @@ export type Actor<S extends Tagged, E extends Tagged> = {
   readonly subscribe: (listener: (state: S) => void) => () => void
 }
 
+/**
+ * Where an actor loads its first state and saves each new one. `load` may return fewer states than
+ * `save` takes, as a schema that leaves out a final state does, so `Saved` can be wider than `S`.
+ */
+export type Slot<S, Saved = S> = {
+  /** The saved state, or undefined when there is none or it no longer decodes. */
+  readonly load: () => S | undefined
+  readonly save: (state: Saved) => void
+}
+
 /** A handler returned a state its `to` doesn't list. Typed code can't reach it; casts and JavaScript can. */
 export class IllegalTransition extends Error {
   readonly _tag = "IllegalTransition"
@@ -169,12 +179,16 @@ export const machine =
  * Effects run only while someone subscribes: the first subscriber starts the current
  * state's effect, the last unsubscribe aborts it. An actor nobody subscribes to is inert,
  * so creating and discarding one (React StrictMode, SSR) has no side effects.
+ *
+ * `from` is a state, or a slot the actor loads once now and saves every new state to.
  */
 export const actor = <S extends Tagged, E extends Tagged>(
   fsm: Machine<S, E>,
-  initial: S = fsm.initial,
+  from: NoInfer<S | Slot<S>> = fsm.initial,
 ): Actor<S, E> => {
-  let state = initial
+  let slot: Slot<S> | undefined
+  // States always have `_tag`, and slots never do. Loading runs no handler, so no output runs.
+  let state = "_tag" in from ? from : ((slot = from).load() ?? fsm.initial)
   let running: AbortController | undefined
   const listeners = new Set<(state: S) => void>()
   const queue: E[] = []
@@ -199,10 +213,10 @@ export const actor = <S extends Tagged, E extends Tagged>(
     })
   }
 
-  // Leave, commit, notify, run outputs, then enter: listeners never see a state its effect has not
-  // settled into, outputs see the committed state, and an effect never starts for a state listeners
-  // have not seen. A refused step only runs its outputs. The first throw stops the listeners and
-  // outputs left, and leaves `send` once the effect has started.
+  // Leave, commit, save, notify, run outputs, then enter: listeners never see a state its effect has
+  // not settled into, outputs see the committed state, and an effect never starts for a state
+  // listeners have not seen. A refused step only runs its outputs. The first throw, from `save`, a
+  // listener or an output, stops the rest and leaves `send` once the effect has started.
   const step = (event: E) => {
     const result = fsm.transition(state, event)
     if (result._tag === "ignored") return
@@ -211,6 +225,7 @@ export const actor = <S extends Tagged, E extends Tagged>(
     try {
       if (result._tag !== "refused") {
         state = result.state
+        slot?.save(state)
         for (const listener of listeners) listener(state)
       }
       for (const run of result.outputs) run()
