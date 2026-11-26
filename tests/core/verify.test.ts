@@ -115,6 +115,40 @@ test("names a state that lists a way out but no sample event takes", () => {
   })
 })
 
+test("names a state whose guard refuses or rebuilds it for every sample event", () => {
+  type Order =
+    | { _tag: "cart"; items: number }
+    | { _tag: "pending"; paid: boolean }
+    | { _tag: "done" }
+  const order = machine<Order, { _tag: "pay" } | { _tag: "confirm" }>()({
+    initial: { _tag: "cart", items: 0 },
+    states: {
+      // The guard says no to `pay` while the cart is empty, and the sample adds nothing.
+      cart: {
+        to: ["pending"],
+        on: { pay: (state) => (state.items === 0 ? state : { _tag: "pending", paid: false }) },
+      },
+      // A new object with the same content is no change either.
+      pending: { to: ["done"], on: { confirm: (state) => ({ ...state }) } },
+      done: { to: [] },
+    },
+  })
+
+  expect(order.transition(order.initial, { _tag: "pay" })._tag).toBe("refused")
+  expect(verify(order, { events: [{ _tag: "pay" }, { _tag: "confirm" }] })).toEqual({
+    _tag: "verified",
+    states: 1,
+    unreached: ["pending", "done"],
+    stuck: ["cart"],
+  })
+  expect(
+    verify(
+      { ...order, initial: { _tag: "pending", paid: false } },
+      { events: [{ _tag: "pay" }, { _tag: "confirm" }] },
+    ),
+  ).toMatchObject({ _tag: "verified", stuck: ["pending"] })
+})
+
 test("counts states equal up to key order once", () => {
   type Dial = { _tag: "off" } | { _tag: "on"; level: number }
   const dial = machine<Dial, { _tag: "turn" } | { _tag: "twist" }>()({
