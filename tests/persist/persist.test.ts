@@ -2,7 +2,12 @@
 import { afterEach, expect, test, vi } from "vitest"
 
 import { actor } from "../../src/index.ts"
-import { createPersister, type Discard, type StandardSchemaV1 } from "../../src/persist.ts"
+import {
+  createPersister,
+  type Discard,
+  type StandardSchemaV1,
+  type Storage,
+} from "../../src/persist.ts"
 import { CartEffect, CartZod, shop, type Cart } from "../shop.ts"
 
 afterEach(() => {
@@ -113,6 +118,31 @@ test("an async schema throws an error that names the key", () => {
   expect(() => actor(cart, persist("cart", Async))).toThrow(
     '"cart": only synchronous schemas are supported',
   )
+})
+
+test("a write that fails is discarded and removes the old data, and the step goes on", () => {
+  localStorage.setItem("cart", JSON.stringify({ version: 0, state: { _tag: "cart", items: 1 } }))
+  const full = new DOMException("Quota exceeded", "QuotaExceededError")
+  const storage: Storage = {
+    getItem: (key) => localStorage.getItem(key),
+    setItem: () => {
+      throw full
+    },
+    removeItem: (key) => localStorage.removeItem(key),
+  }
+  const discard = vi.fn<(key: string, reason: Discard) => void>()
+  const running = actor(cart, createPersister(storage, { discard })("cart", CartZod))
+  const seen: Array<Cart> = []
+  running.subscribe((state) => seen.push(state))
+
+  running.send({ _tag: "pay" })
+
+  expect(seen).toEqual([
+    { _tag: "cart", items: 1 },
+    { _tag: "paying", items: 1 },
+  ])
+  expect(discard).toHaveBeenCalledExactlyOnceWith("cart", { _tag: "save", error: full })
+  expect(localStorage.getItem("cart")).toBeNull()
 })
 
 test("without storage, a slot loads nothing and saves nothing", () => {
