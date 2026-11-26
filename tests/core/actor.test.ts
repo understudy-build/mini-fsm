@@ -78,6 +78,39 @@ test("the last unsubscribe aborts the running effect", () => {
   expect(requests[0]!.signal.aborted).toBe(true)
 })
 
+test("a listener that unsubscribes as the machine enters a state leaves no effect running", async () => {
+  const requests = fakeFetch()
+  const search = actor(searchMachine)
+  const stop = search.subscribe((state) => {
+    if (state._tag === "loading") stop()
+  })
+
+  search.send({ _tag: "search", query: "ts" })
+  expect(requests).toHaveLength(0)
+
+  search.subscribe(() => {})
+  expect(requests.map((request) => request.url)).toEqual(["/search?q=ts"])
+
+  requests[0]!.respond(["typescript"])
+  await settle()
+  expect(search.get()).toEqual({ _tag: "success", query: "ts", items: ["typescript"] })
+})
+
+test("a listener that hands over to another one during a step starts one effect", () => {
+  const requests = fakeFetch()
+  const search = actor(searchMachine)
+  const stop = search.subscribe((state) => {
+    if (state._tag !== "loading") return
+    stop()
+    search.subscribe(() => {})
+  })
+
+  search.send({ _tag: "search", query: "ts" })
+
+  expect(requests.map((request) => request.url)).toEqual(["/search?q=ts"])
+  expect(requests[0]!.signal.aborted).toBe(false)
+})
+
 test("a send from inside an effect waits for the current step, so listeners see every state in order", () => {
   type Light = { _tag: "red" } | { _tag: "green" } | { _tag: "yellow" }
   const light = machine<Light, { _tag: "next" }>()({

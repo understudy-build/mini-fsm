@@ -193,6 +193,11 @@ export const actor = <S extends Tagged, E extends Tagged>(
   const listeners = new Set<(state: S) => void>()
   const queue: E[] = []
 
+  const leave = () => {
+    running?.abort()
+    running = undefined
+  }
+
   const enter = () => {
     const controller = new AbortController()
     running = controller
@@ -216,12 +221,12 @@ export const actor = <S extends Tagged, E extends Tagged>(
   // Leave, commit, save, notify, run outputs, then enter: listeners never see a state its effect has
   // not settled into, outputs see the committed state, and an effect never starts for a state
   // listeners have not seen. A refused step only runs its outputs. The first throw, from `save`, a
-  // listener or an output, stops the rest and leaves `send` once the effect has started.
+  // listener or an output, stops the rest and leaves `send` once the effect has started. A listener
+  // or an output may subscribe or unsubscribe, so the effect starts for whoever subscribes at the end.
   const step = (event: E) => {
     const result = fsm.transition(state, event)
     if (result._tag === "ignored") return
-    const restart = result._tag === "entered" && running !== undefined
-    if (restart) running?.abort()
+    if (result._tag === "entered") leave()
     try {
       if (result._tag !== "refused") {
         state = result.state
@@ -230,7 +235,7 @@ export const actor = <S extends Tagged, E extends Tagged>(
       }
       for (const run of result.outputs) run()
     } finally {
-      if (restart) enter()
+      if (listeners.size > 0 && !running) enter()
     }
   }
 
@@ -253,13 +258,11 @@ export const actor = <S extends Tagged, E extends Tagged>(
     // Call first: a throwing listener is never added, and it sees the state its effect starts from.
     entry(state)
     listeners.add(entry)
-    if (listeners.size === 1) enter()
+    // A step in progress starts the effect itself, once its listeners and outputs have run.
+    if (queue.length === 0 && !running) enter()
     return () => {
       listeners.delete(entry)
-      if (listeners.size === 0 && running) {
-        running.abort()
-        running = undefined
-      }
+      if (listeners.size === 0) leave()
     }
   }
 
